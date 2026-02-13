@@ -136,6 +136,7 @@ app.get('/', (req, res) => {
         'GET /stats': 'Scan statistics',
         'POST /badge/request': 'Request a trust badge',
         'GET /badge/:domain': 'Check domain badge',
+        'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -313,6 +314,218 @@ app.get('/badge/:domain', (req, res) => {
   res.json({ domain: req.params.domain, ...info });
 });
 
+// --- Moltbook Integration ---
+function postJson(url, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const payload = JSON.stringify(body);
+    const opts = {
+      hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search,
+      method: 'POST', timeout: 15000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), ...headers },
+    };
+    const client = u.protocol === 'https:' ? https : http;
+    const req = client.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, data }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => reject(new Error('Timeout')));
+    req.write(payload);
+    req.end();
+  });
+}
+
+function solveLobsterMath(challenge) {
+  // Clean obfuscated text: remove special chars, normalize
+  const clean = challenge
+    .replace(/[^a-zA-Z0-9.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .trim();
+
+  // Word-to-number mapping
+  const wordNums = {
+    zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,
+    ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,sixteen:16,
+    seventeen:17,eighteen:18,nineteen:19,twenty:20,thirty:30,forty:40,fifty:50,
+    sixty:60,seventy:70,eighty:80,ninety:90,hundred:100,thousand:1000,
+  };
+
+  // Parse numbers from text (both digit and word forms)
+  function extractNumbers(text) {
+    const nums = [];
+    // First extract digit numbers
+    const digitRegex = /\b(\d+(?:\.\d+)?)\b/g;
+    let m;
+    while ((m = digitRegex.exec(text)) !== null) nums.push({ val: parseFloat(m[1]), idx: m.index });
+
+    // Then parse word numbers (handle compound like "twenty three" = 23)
+    const words = text.split(/\s+/);
+    let current = null;
+    let currentIdx = 0;
+    let pos = 0;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      pos = text.indexOf(w, pos);
+      if (wordNums[w] !== undefined) {
+        const v = wordNums[w];
+        if (v === 100) {
+          current = (current || 1) * 100;
+        } else if (v === 1000) {
+          current = (current || 1) * 1000;
+        } else {
+          if (current === null) { current = v; currentIdx = pos; }
+          else if (v < 10 && current >= 20) { current += v; } // twenty three
+          else { nums.push({ val: current, idx: currentIdx }); current = v; currentIdx = pos; }
+        }
+      } else {
+        if (current !== null) { nums.push({ val: current, idx: currentIdx }); current = null; }
+      }
+      pos += w.length;
+    }
+    if (current !== null) nums.push({ val: current, idx: currentIdx });
+
+    // Sort by position and deduplicate
+    nums.sort((a, b) => a.idx - b.idx);
+    return nums.map(n => n.val);
+  }
+
+  const numbers = extractNumbers(clean);
+  if (numbers.length < 2) return null;
+
+  const text = clean;
+
+  // Pattern: speed/velocity A, loses/decreases by B → A - B
+  if (/loses|decreases|slows|reduces|drops|minus|subtract|less|lower/.test(text)) {
+    return (numbers[0] - numbers[1]).toFixed(2);
+  }
+  if (/gains|increases|speeds|adds|plus|faster|accelerat|boost/.test(text)) {
+    return (numbers[0] + numbers[1]).toFixed(2);
+  }
+  if (/multipli|times|doubled|tripled/.test(text)) {
+    if (/doubled/.test(text)) return (numbers[0] * 2).toFixed(2);
+    if (/tripled/.test(text)) return (numbers[0] * 3).toFixed(2);
+    return (numbers[0] * numbers[1]).toFixed(2);
+  }
+  if (/divided|halved|split/.test(text)) {
+    if (/halved/.test(text)) return (numbers[0] / 2).toFixed(2);
+    return (numbers[0] / numbers[1]).toFixed(2);
+  }
+
+  // Fallback: subtraction (most common)
+  return (numbers[0] - numbers[1]).toFixed(2);
+}
+
+function generateMoltbookPost(result) {
+  const source = result.source || result.url || 'unknown';
+  let hostname;
+  try { hostname = new URL(source).hostname; } catch { hostname = source; }
+
+  const title = `SkillAudit Report: ${result.riskLevel.toUpperCase()} — ${hostname}`;
+
+  let content = `**Risk Level:** ${result.riskLevel.toUpperCase()} (score: ${result.riskScore})\n\n`;
+  content += `**Findings:** ${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low`;
+  if (result.summary.suppressed > 0) content += ` (${result.summary.suppressed} suppressed as documentation)`;
+  content += '\n\n';
+
+  if (result.findings.length > 0) {
+    content += '**Top findings:**\n';
+    result.findings.slice(0, 3).forEach(f => {
+      content += `- \`${f.ruleId}\` [${f.severity}] — ${f.name} (line ${f.line})\n`;
+    });
+    if (result.findings.length > 3) content += `- ... and ${result.findings.length - 3} more\n`;
+    content += '\n';
+  }
+
+  content += `**Verdict:** ${result.verdict}\n\n`;
+  content += `**Full report:** https://skillaudit.vercel.app/report/${result.id}\n\n`;
+  content += `Scanned by SkillAudit 🛡️`;
+
+  return { title, content };
+}
+
+app.post('/share/moltbook', scanLimiter, async (req, res) => {
+  const { scanId, apiKey, submolt } = req.body;
+  if (!scanId) return res.status(400).json({ error: 'scanId is required' });
+  if (!apiKey) return res.status(400).json({ error: 'apiKey is required (your Moltbook API key)' });
+
+  const result = sharedScans.get(scanId);
+  if (!result) return res.status(404).json({ error: 'Scan not found' });
+
+  const { title, content } = generateMoltbookPost(result);
+  const targetSubmolt = submolt || 'general';
+
+  try {
+    // Step 1: Create post on Moltbook
+    const postRes = await postJson('https://www.moltbook.com/api/v1/posts', {
+      title, content, submolt: targetSubmolt,
+    }, { 'X-API-Key': apiKey });
+
+    if (!postRes.data.success) {
+      return res.status(400).json({
+        error: 'Moltbook rejected the post',
+        moltbook_error: postRes.data.error || postRes.data,
+        hint: postRes.data.hint || null,
+        retry_after_minutes: postRes.data.retry_after_minutes || null,
+      });
+    }
+
+    // Step 2: Handle verification challenge if present
+    if (postRes.data.verification_required && postRes.data.verification) {
+      const v = postRes.data.verification;
+      const answer = solveLobsterMath(v.challenge);
+
+      if (!answer) {
+        return res.status(500).json({
+          error: 'Could not solve verification challenge',
+          challenge: v.challenge,
+          verification_code: v.code,
+          hint: 'You can manually verify at POST /api/v1/verify on moltbook.com',
+        });
+      }
+
+      // Step 3: Submit verification
+      const verifyRes = await postJson('https://www.moltbook.com/api/v1/verify', {
+        verification_code: v.code,
+        answer,
+      }, { 'X-API-Key': apiKey });
+
+      if (!verifyRes.data.success) {
+        return res.status(400).json({
+          error: 'Verification failed',
+          moltbook_error: verifyRes.data.error || verifyRes.data,
+          challenge: v.challenge,
+          our_answer: answer,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Posted to Moltbook! 🦞',
+        post_id: postRes.data.post?.id,
+        post_url: `https://moltbook.com/m/${targetSubmolt}/${postRes.data.post?.id}`,
+        verified: true,
+      });
+    }
+
+    // No verification needed (trusted agent)
+    return res.json({
+      success: true,
+      message: 'Posted to Moltbook! 🦞',
+      post_id: postRes.data.post?.id,
+      post_url: `https://moltbook.com/m/${targetSubmolt}/${postRes.data.post?.id}`,
+      verified: false,
+    });
+  } catch (err) {
+    res.status(500).json({ error: `Moltbook API error: ${err.message}` });
+  }
+});
+
 // --- OpenAPI 3.0 Spec ---
 app.get('/openapi.json', (req, res) => {
   res.json({
@@ -335,6 +548,7 @@ app.get('/openapi.json', (req, res) => {
       '/stats': { get: { summary: 'Scan statistics', responses: { '200': { description: 'Stats' } } } },
       '/badge/request': { post: { summary: 'Request trust badge', responses: { '200': { description: 'Badge result' } } } },
       '/badge/{domain}': { get: { summary: 'Check domain badge', responses: { '200': { description: 'Badge info' } } } },
+      '/share/moltbook': { post: { summary: 'Share scan to Moltbook', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['scanId', 'apiKey'], properties: { scanId: { type: 'string' }, apiKey: { type: 'string' }, submolt: { type: 'string', default: 'general' } } } } } }, responses: { '200': { description: 'Post result' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });
@@ -417,10 +631,26 @@ details summary::before{content:'▸ ';color:#555}details[open] summary::before{
 </div>
 <h2 style="color:#00ff88;font-size:1.1rem;margin:1.5rem 0 0.5rem;border-bottom:1px solid #2a2a5a;padding-bottom:0.5rem">Findings</h2>
 ${findingsHtml}
+<div style="text-align:center;margin:1.5rem 0">
+  <button onclick="shareToMoltbook()" style="background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.6rem 1.5rem;font-size:1rem;font-weight:700;cursor:pointer;font-family:monospace">Share to Moltbook 🦞</button>
+</div>
 <div class="footer">
   <a href="/">← Back to SkillAudit</a> · <a href="/scan/${esc(result.id)}">JSON API</a><br>
   Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠
 </div>
+<script>
+async function shareToMoltbook(){
+  const apiKey=prompt('Enter your Moltbook API key:\\n\\n(Your key stays in your browser — never stored on our server)');
+  if(!apiKey||!apiKey.trim())return;
+  const submolt=prompt('Which submolt? (default: general)','general')||'general';
+  try{
+    const res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId:'${esc(result.id)}',apiKey:apiKey.trim(),submolt})});
+    const data=await res.json();
+    if(data.success){alert('Posted to Moltbook! 🦞\\n\\n'+data.post_url)}
+    else{alert('Failed: '+(data.error||'Unknown error')+'\\n'+(data.hint||data.moltbook_error||''))}
+  }catch(e){alert('Error: '+e.message)}
+}
+</script>
 </div></body></html>`;
 }
 

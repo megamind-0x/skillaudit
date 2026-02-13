@@ -214,8 +214,8 @@ async function runScan(){
     html+='<div class="verdict">'+data.verdict+'</div>';
     if(data.reportUrl){
       const reportUrl=location.origin+data.reportUrl;
-      const shareUrl=location.origin+data.shareUrl;
       html+=`<div class="share-link">🔗 <input readonly value="${reportUrl}" onclick="this.select()"/><button onclick="navigator.clipboard.writeText('${reportUrl}')">Copy</button></div>`;
+      html+=`<div style="margin-bottom:1rem"><button onclick="shareToMoltbook('${data.id}')" style="background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.5rem 1rem;font-size:0.9rem;font-weight:700;cursor:pointer;font-family:monospace">Share to Moltbook 🦞</button></div>`;
     }
     html+='<div class="summary-grid">';
     html+='<div class="summary-item"><div class="num" style="color:#fff">'+data.summary.total+'</div><div class="label">Findings</div></div>';
@@ -235,6 +235,20 @@ async function runScan(){
     loadStats();loadRecent();
   }catch(e){results.innerHTML='<p style="color:#ff4444">Error: '+e.message+'</p>';results.style.display='block'}
   finally{btn.disabled=false;btn.textContent='Scan'}
+}
+async function shareToMoltbook(scanId){
+  const apiKey=prompt('Enter your Moltbook API key:\n\n(Your key stays in your browser and is sent directly to Moltbook — never stored on our server)');
+  if(!apiKey||!apiKey.trim())return;
+  const submolt=prompt('Which submolt? (default: general)','general')||'general';
+  try{
+    const res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId,apiKey:apiKey.trim(),submolt})});
+    const data=await res.json();
+    if(data.success){
+      alert('Posted to Moltbook! 🦞\n\n'+data.post_url);
+    }else{
+      alert('Failed: '+(data.error||'Unknown error')+'\n'+(data.hint||data.moltbook_error||''));
+    }
+  }catch(e){alert('Error: '+e.message)}
 }
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')runScan()});
 loadStats();loadRecent();

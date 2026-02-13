@@ -73,7 +73,7 @@ function fetchUrl(url) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Request timeout (15s)')), 15000);
     const client = url.startsWith('https') ? https : http;
-    client.get(url, { headers: { 'User-Agent': 'SkillAudit/0.4' }, timeout: 15000 }, (res) => {
+    client.get(url, { headers: { 'User-Agent': 'SkillAudit/0.5' }, timeout: 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         clearTimeout(timeout);
         return fetchUrl(res.headers.location).then(resolve).catch(reject);
@@ -96,7 +96,7 @@ function fireCallback(callbackUrl, result) {
     const payload = JSON.stringify(result);
     const options = {
       hostname: url.hostname, port: url.port, path: url.pathname + url.search,
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'SkillAudit/0.4-webhook' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'SkillAudit/0.5-webhook' },
       timeout: 10000,
     };
     const client = url.protocol === 'https:' ? https : http;
@@ -121,7 +121,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
     return res.json({
-      name: 'SkillAudit', version: '0.4.0',
+      name: 'SkillAudit', version: '0.5.0',
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
@@ -146,7 +146,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '0.4.0', uptime: process.uptime() });
+  res.json({ status: 'ok', version: '0.5.0', uptime: process.uptime() });
 });
 
 // --- Rules ---
@@ -341,9 +341,10 @@ function postJson(url, body, headers = {}) {
 }
 
 function solveLobsterMath(challenge) {
-  // Clean obfuscated text: remove special chars, normalize
+  // Clean obfuscated text: strip special formatting chars, normalize
   const clean = challenge
-    .replace(/[^a-zA-Z0-9.\s]/g, ' ')
+    .replace(/[\]\[^\/\-~{}|<>()!@#$%&*_+=\\]/g, '')
+    .replace(/[^a-zA-Z0-9.\s,?]/g, ' ')
     .replace(/\s+/g, ' ')
     .toLowerCase()
     .trim();
@@ -356,15 +357,12 @@ function solveLobsterMath(challenge) {
     sixty:60,seventy:70,eighty:80,ninety:90,hundred:100,thousand:1000,
   };
 
-  // Parse numbers from text (both digit and word forms)
   function extractNumbers(text) {
     const nums = [];
-    // First extract digit numbers
     const digitRegex = /\b(\d+(?:\.\d+)?)\b/g;
     let m;
     while ((m = digitRegex.exec(text)) !== null) nums.push({ val: parseFloat(m[1]), idx: m.index });
 
-    // Then parse word numbers (handle compound like "twenty three" = 23)
     const words = text.split(/\s+/);
     let current = null;
     let currentIdx = 0;
@@ -380,7 +378,8 @@ function solveLobsterMath(challenge) {
           current = (current || 1) * 1000;
         } else {
           if (current === null) { current = v; currentIdx = pos; }
-          else if (v < 10 && current >= 20) { current += v; } // twenty three
+          else if (v < 10 && current >= 20) { current += v; }
+          else if (v >= 20 && current < 10) { nums.push({ val: current, idx: currentIdx }); current = v; currentIdx = pos; }
           else { nums.push({ val: current, idx: currentIdx }); current = v; currentIdx = pos; }
         }
       } else {
@@ -390,35 +389,41 @@ function solveLobsterMath(challenge) {
     }
     if (current !== null) nums.push({ val: current, idx: currentIdx });
 
-    // Sort by position and deduplicate
     nums.sort((a, b) => a.idx - b.idx);
-    return nums.map(n => n.val);
+    // Deduplicate overlapping digit/word matches
+    const deduped = [];
+    for (const n of nums) {
+      if (deduped.length === 0 || Math.abs(n.idx - deduped[deduped.length - 1].idx) > 2) {
+        deduped.push(n);
+      }
+    }
+    return deduped.map(n => n.val);
   }
 
   const numbers = extractNumbers(clean);
-  if (numbers.length < 2) return null;
+  if (numbers.length < 2) return numbers.length === 1 ? numbers[0].toFixed(2) : null;
 
   const text = clean;
 
-  // Pattern: speed/velocity A, loses/decreases by B → A - B
-  if (/loses|decreases|slows|reduces|drops|minus|subtract|less|lower/.test(text)) {
+  // Detect operation from context
+  if (/multipli|times/.test(text)) return (numbers[0] * numbers[1]).toFixed(2);
+  if (/doubled/.test(text)) return (numbers[0] * 2).toFixed(2);
+  if (/tripled/.test(text)) return (numbers[0] * 3).toFixed(2);
+  if (/divided/.test(text)) return (numbers[0] / numbers[1]).toFixed(2);
+  if (/halved/.test(text)) return (numbers[0] / 2).toFixed(2);
+
+  // Subtraction keywords
+  if (/loses|decreases|slows|reduces|drops|minus|subtract|less than|slower|behind|difference|remaining|left/.test(text)) {
     return (numbers[0] - numbers[1]).toFixed(2);
   }
-  if (/gains|increases|speeds|adds|plus|faster|accelerat|boost/.test(text)) {
-    return (numbers[0] + numbers[1]).toFixed(2);
-  }
-  if (/multipli|times|doubled|tripled/.test(text)) {
-    if (/doubled/.test(text)) return (numbers[0] * 2).toFixed(2);
-    if (/tripled/.test(text)) return (numbers[0] * 3).toFixed(2);
-    return (numbers[0] * numbers[1]).toFixed(2);
-  }
-  if (/divided|halved|split/.test(text)) {
-    if (/halved/.test(text)) return (numbers[0] / 2).toFixed(2);
-    return (numbers[0] / numbers[1]).toFixed(2);
+
+  // Addition keywords (including "total", "combined", "together", "and", "sum")
+  if (/total|combined|together|sum|adds|plus|gains|increases|faster|boost|accelerat|additional|more than|and.*(?:what|how)/.test(text)) {
+    return numbers.reduce((a, b) => a + b, 0).toFixed(2);
   }
 
-  // Fallback: subtraction (most common)
-  return (numbers[0] - numbers[1]).toFixed(2);
+  // Fallback: addition (lobster claw force problems are usually addition)
+  return numbers.reduce((a, b) => a + b, 0).toFixed(2);
 }
 
 function generateMoltbookPost(result) {
@@ -531,7 +536,7 @@ app.get('/openapi.json', (req, res) => {
   res.json({
     openapi: '3.0.3',
     info: {
-      title: 'SkillAudit API', version: '0.4.0',
+      title: 'SkillAudit API', version: '0.5.0',
       description: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
       contact: { name: 'Megamind_0x', url: 'https://moltbook.com/u/Megamind_0x' },
     },
@@ -632,23 +637,44 @@ details summary::before{content:'▸ ';color:#555}details[open] summary::before{
 <h2 style="color:#00ff88;font-size:1.1rem;margin:1.5rem 0 0.5rem;border-bottom:1px solid #2a2a5a;padding-bottom:0.5rem">Findings</h2>
 ${findingsHtml}
 <div style="text-align:center;margin:1.5rem 0">
-  <button onclick="shareToMoltbook()" style="background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.6rem 1.5rem;font-size:1rem;font-weight:700;cursor:pointer;font-family:monospace">Share to Moltbook 🦞</button>
+  <button onclick="openMoltbookModal()" style="background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.6rem 1.5rem;font-size:1rem;font-weight:700;cursor:pointer;font-family:monospace">Share to Moltbook 🦞</button>
+</div>
+<div id="moltbook-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;z-index:9999">
+  <div style="background:#1a1a3e;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:420px;width:90%;font-family:monospace">
+    <h3 style="color:#e01b24;margin-bottom:1rem">Share to Moltbook 🦞</h3>
+    <label style="color:#888;font-size:0.8rem">Moltbook API Key</label>
+    <input id="mb-key" type="password" placeholder="moltbook_sk_..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.5rem;color:#fff;font-family:monospace;margin:0.3rem 0 0.5rem">
+    <p style="color:#555;font-size:0.7rem;margin-bottom:0.8rem">Your key is used only for this post and never stored.</p>
+    <label style="color:#888;font-size:0.8rem">Submolt</label>
+    <select id="mb-submolt" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.5rem;color:#fff;font-family:monospace;margin:0.3rem 0 1rem">
+      <option value="general">general</option>
+      <option value="todayilearned">todayilearned</option>
+      <option value="security">security</option>
+    </select>
+    <div style="display:flex;gap:0.5rem">
+      <button id="mb-post" onclick="doPost()" style="flex:1;background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.6rem;font-weight:700;cursor:pointer;font-family:monospace">Post to Moltbook</button>
+      <button onclick="document.getElementById('moltbook-modal').style.display='none'" style="background:#2a2a5a;color:#fff;border:none;border-radius:8px;padding:0.6rem 1rem;cursor:pointer;font-family:monospace">Cancel</button>
+    </div>
+    <div id="mb-result" style="margin-top:0.8rem;font-size:0.85rem"></div>
+  </div>
 </div>
 <div class="footer">
   <a href="/">← Back to SkillAudit</a> · <a href="/scan/${esc(result.id)}">JSON API</a><br>
   Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠
 </div>
 <script>
-async function shareToMoltbook(){
-  const apiKey=prompt('Enter your Moltbook API key:\\n\\n(Your key stays in your browser — never stored on our server)');
-  if(!apiKey||!apiKey.trim())return;
-  const submolt=prompt('Which submolt? (default: general)','general')||'general';
-  try{
-    const res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId:'${esc(result.id)}',apiKey:apiKey.trim(),submolt})});
-    const data=await res.json();
-    if(data.success){alert('Posted to Moltbook! 🦞\\n\\n'+data.post_url)}
-    else{alert('Failed: '+(data.error||'Unknown error')+'\\n'+(data.hint||data.moltbook_error||''))}
-  }catch(e){alert('Error: '+e.message)}
+function openMoltbookModal(){document.getElementById('moltbook-modal').style.display='flex';document.getElementById('mb-key').focus()}
+document.getElementById('moltbook-modal').addEventListener('click',function(e){if(e.target===this)this.style.display='none'});
+async function doPost(){
+  var key=document.getElementById('mb-key').value.trim(),submolt=document.getElementById('mb-submolt').value,btn=document.getElementById('mb-post'),r=document.getElementById('mb-result');
+  if(!key){r.innerHTML='<span style="color:#ff4444">Please enter your API key</span>';return}
+  btn.disabled=true;btn.textContent='Posting...';r.innerHTML='';
+  try{var res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId:'${esc(result.id)}',apiKey:key,submolt:submolt})});
+  var data=await res.json();
+  if(data.success){r.innerHTML='<span style="color:#00ff88">✅ Posted!</span> <a href="'+data.post_url+'" target="_blank" style="color:#00ff88">'+data.post_url+'</a>'}
+  else{r.innerHTML='<span style="color:#ff4444">'+(data.error||'Failed')+'</span>'+(data.hint?'<br><span style="color:#888">'+data.hint+'</span>':'')+(data.retry_after_minutes?'<br><span style="color:#888">Retry after '+data.retry_after_minutes+' min</span>':'')}}
+  catch(e){r.innerHTML='<span style="color:#ff4444">Error: '+e.message+'</span>'}
+  finally{btn.disabled=false;btn.textContent='Post to Moltbook'}
 }
 </script>
 </div></body></html>`;
@@ -663,5 +689,5 @@ function reportNotFound() {
 
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
-  console.log(`🛡️  SkillAudit v0.4.0 running on port ${PORT}`);
+  console.log(`🛡️  SkillAudit v0.5.0 running on port ${PORT}`);
 });

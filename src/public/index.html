@@ -107,7 +107,7 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <header>
 <h1>🛡️ Skill<span>Audit</span></h1>
 <p class="tagline">Security scanner for AI agent skills<br>Structural analysis · URL reputation · Intent detection</p>
-<p class="version">v0.4.0</p>
+<p class="version">v0.5.0</p>
 </header>
 
 <div class="stats-row">
@@ -139,12 +139,12 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 </div>
 
 <section>
-<h2>What's New in v0.4</h2>
+<h2>What's New in v0.5</h2>
 <div class="features">
+<div class="feature"><h3>🦞 Moltbook Sharing</h3><p>Share scan reports directly to Moltbook with one click. Auto-generates posts with risk summary, top findings, and report link.</p></div>
+<div class="feature"><h3>🧮 Lobster Math Solver</h3><p>Automatically solves Moltbook's verification challenges — no manual math needed.</p></div>
 <div class="feature"><h3>🧠 Smarter Suppression</h3><p>Context-aware false positive reduction. Documentation examples, placeholders, and tutorials no longer trigger false alarms.</p></div>
 <div class="feature"><h3>📊 Report Pages</h3><p>Every scan gets a shareable HTML report with dark theme, collapsible findings, and color-coded severity.</p></div>
-<div class="feature"><h3>⚡ URL Caching</h3><p>5-minute cache for fetched URLs. Faster rescans, less load on skill hosts.</p></div>
-<div class="feature"><h3>🔗 Full CORS</h3><p>All endpoints support CORS. Browser-based agents can use the API directly.</p></div>
 <div class="feature"><h3>📦 Batch Scanning</h3><p>Scan up to 20 skill URLs in one request. Audit entire registries.</p></div>
 <div class="feature"><h3>🔄 Version Compare</h3><p>Diff two versions. See new findings, resolved issues, and risk delta.</p></div>
 </div>
@@ -165,6 +165,7 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <tr><td><code>GET</code></td><td><code>/stats</code></td><td>Scan statistics</td></tr>
 <tr><td><code>POST</code></td><td><code>/badge/request</code></td><td>Request trust badge</td></tr>
 <tr><td><code>GET</code></td><td><code>/badge/:domain</code></td><td>Check domain badge</td></tr>
+<tr><td><code>POST</code></td><td><code>/share/moltbook</code></td><td>Share scan to Moltbook 🦞</td></tr>
 <tr><td><code>GET</code></td><td><code>/openapi.json</code></td><td>OpenAPI 3.0 spec</td></tr>
 </table>
 </section>
@@ -236,19 +237,50 @@ async function runScan(){
   }catch(e){results.innerHTML='<p style="color:#ff4444">Error: '+e.message+'</p>';results.style.display='block'}
   finally{btn.disabled=false;btn.textContent='Scan'}
 }
-async function shareToMoltbook(scanId){
-  const apiKey=prompt('Enter your Moltbook API key:\n\n(Your key stays in your browser and is sent directly to Moltbook — never stored on our server)');
-  if(!apiKey||!apiKey.trim())return;
-  const submolt=prompt('Which submolt? (default: general)','general')||'general';
+function shareToMoltbook(scanId){
+  let overlay=document.getElementById('moltbook-modal');
+  if(overlay)overlay.remove();
+  overlay=document.createElement('div');
+  overlay.id='moltbook-modal';
+  overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999';
+  overlay.innerHTML=`<div style="background:#1a1a3e;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:420px;width:90%;font-family:monospace">
+    <h3 style="color:#e01b24;margin-bottom:1rem">Share to Moltbook 🦞</h3>
+    <label style="color:#888;font-size:0.8rem">Moltbook API Key</label>
+    <input id="mb-key" type="password" placeholder="moltbook_sk_..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.5rem;color:#fff;font-family:monospace;margin:0.3rem 0 0.5rem">
+    <p style="color:#555;font-size:0.7rem;margin-bottom:0.8rem">Your key is used only for this post and never stored.</p>
+    <label style="color:#888;font-size:0.8rem">Submolt</label>
+    <select id="mb-submolt" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.5rem;color:#fff;font-family:monospace;margin:0.3rem 0 1rem">
+      <option value="general">general</option>
+      <option value="todayilearned">todayilearned</option>
+      <option value="security">security</option>
+    </select>
+    <div style="display:flex;gap:0.5rem">
+      <button id="mb-post" onclick="doMoltbookPost('${scanId}')" style="flex:1;background:#e01b24;color:#fff;border:none;border-radius:8px;padding:0.6rem;font-weight:700;cursor:pointer;font-family:monospace">Post to Moltbook</button>
+      <button onclick="document.getElementById('moltbook-modal').remove()" style="background:#2a2a5a;color:#fff;border:none;border-radius:8px;padding:0.6rem 1rem;cursor:pointer;font-family:monospace">Cancel</button>
+    </div>
+    <div id="mb-result" style="margin-top:0.8rem;font-size:0.85rem"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('mb-key').focus();
+}
+async function doMoltbookPost(scanId){
+  const key=document.getElementById('mb-key').value.trim();
+  const submolt=document.getElementById('mb-submolt').value;
+  const btn=document.getElementById('mb-post');
+  const result=document.getElementById('mb-result');
+  if(!key){result.innerHTML='<span style="color:#ff4444">Please enter your API key</span>';return}
+  btn.disabled=true;btn.textContent='Posting...';result.innerHTML='';
   try{
-    const res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId,apiKey:apiKey.trim(),submolt})});
+    const res=await fetch('/share/moltbook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scanId,apiKey:key,submolt})});
     const data=await res.json();
     if(data.success){
-      alert('Posted to Moltbook! 🦞\n\n'+data.post_url);
+      result.innerHTML=`<span style="color:#00ff88">✅ Posted!</span> <a href="${data.post_url}" target="_blank" style="color:#00ff88">${data.post_url}</a>`;
     }else{
-      alert('Failed: '+(data.error||'Unknown error')+'\n'+(data.hint||data.moltbook_error||''));
+      result.innerHTML=`<span style="color:#ff4444">${data.error||'Failed'}</span>${data.hint?'<br><span style="color:#888">'+data.hint+'</span>':''}${data.retry_after_minutes?'<br><span style="color:#888">Retry after '+data.retry_after_minutes+' min</span>':''}`;
     }
-  }catch(e){alert('Error: '+e.message)}
+  }catch(e){result.innerHTML=`<span style="color:#ff4444">Error: ${e.message}</span>`}
+  finally{btn.disabled=false;btn.textContent='Post to Moltbook'}
 }
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')runScan()});
 loadStats();loadRecent();

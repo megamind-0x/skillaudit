@@ -7,13 +7,15 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0f0f23;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;line-height:1.6}
-a{color:#00ff88;text-decoration:none}
-a:hover{text-decoration:underline}
+a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .container{max-width:800px;margin:0 auto;padding:2rem 1.5rem}
 header{text-align:center;padding:3rem 0 2rem}
 h1{font-size:2.5rem;color:#fff;margin-bottom:0.5rem}
 h1 span{color:#00ff88}
-.tagline{color:#888;font-size:1.1rem;margin-bottom:2rem}
+.tagline{color:#888;font-size:1.1rem;margin-bottom:0.5rem}
+.version{color:#555;font-size:0.85rem;margin-bottom:2rem}
+.counter{text-align:center;margin:1rem 0 2rem;font-size:1.3rem;color:#00ff88;font-weight:700}
+.counter .num{font-size:2rem}
 .scan-box{background:#1a1a3e;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;margin:2rem 0}
 .scan-box h2{color:#00ff88;font-size:1.1rem;margin-bottom:1rem}
 .input-row{display:flex;gap:0.75rem}
@@ -30,6 +32,9 @@ h1 span{color:#00ff88}
 .risk-high{background:#3d1a0a;border:1px solid #ff4444;color:#ff4444}
 .risk-critical{background:#3d0a0a;border:1px solid #ff0044;color:#ff0044}
 .verdict{padding:0.75rem 1rem;background:#111133;border-radius:8px;margin-bottom:1rem;font-size:0.95rem}
+.share-link{padding:0.5rem 1rem;background:#0f0f23;border:1px solid #2a2a5a;border-radius:6px;margin-bottom:1rem;font-size:0.85rem;display:flex;align-items:center;gap:0.5rem}
+.share-link input{flex:1;background:transparent;border:none;color:#00ff88;font-family:monospace;font-size:0.85rem;outline:none}
+.share-link button{background:#2a2a5a;color:#fff;border:none;border-radius:4px;padding:0.3rem 0.7rem;cursor:pointer;font-size:0.8rem}
 .findings{list-style:none}
 .findings li{padding:0.5rem 0.75rem;border-left:3px solid #3a3a6a;margin-bottom:0.5rem;font-size:0.85rem;background:#111133;border-radius:0 4px 4px 0}
 .findings li.sev-critical{border-color:#ff0044}
@@ -37,11 +42,18 @@ h1 span{color:#00ff88}
 .findings li.sev-medium{border-color:#ffaa00}
 .findings li.sev-low{border-color:#88ff00}
 .finding-id{font-weight:700;color:#00ff88;margin-right:0.5rem}
-.finding-sev{padding:0.1rem 0.4rem;border-radius:4px;font-size:0.7rem;text-transform:uppercase;font-weight:700;margin-right:0.5rem}
 .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:0.5rem;margin-bottom:1rem}
 .summary-item{text-align:center;padding:0.5rem;background:#111133;border-radius:6px}
 .summary-item .num{font-size:1.5rem;font-weight:700;color:#00ff88}
 .summary-item .label{font-size:0.75rem;color:#888}
+.recent-scans{background:#1a1a3e;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;margin:2rem 0}
+.recent-scans h2{color:#00ff88;font-size:1.1rem;margin-bottom:1rem}
+.recent-list{list-style:none}
+.recent-list li{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid #1a1a3e;font-size:0.85rem}
+.recent-list li:last-child{border-bottom:none}
+.recent-url{color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+.risk-pill{padding:0.15rem 0.5rem;border-radius:10px;font-size:0.7rem;font-weight:700;text-transform:uppercase}
+.pill-clean{background:#0a3d1a;color:#00ff88}.pill-low{background:#2a3d0a;color:#88ff00}.pill-moderate{background:#3d2a0a;color:#ffaa00}.pill-high{background:#3d1a0a;color:#ff4444}.pill-critical{background:#3d0a0a;color:#ff0044}
 section{margin:3rem 0}
 section h2{color:#00ff88;font-size:1.3rem;margin-bottom:1rem;border-bottom:1px solid #2a2a5a;padding-bottom:0.5rem}
 table{width:100%;border-collapse:collapse;font-size:0.9rem}
@@ -50,6 +62,10 @@ th{color:#00ff88;font-weight:600}
 code{background:#1a1a3e;padding:0.15rem 0.4rem;border-radius:4px;font-size:0.85rem}
 pre{background:#1a1a3e;padding:1rem;border-radius:8px;overflow-x:auto;font-size:0.85rem;margin:0.5rem 0}
 .badge-section{background:#1a1a3e;padding:1rem 1.5rem;border-radius:8px;margin:1rem 0}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin:1.5rem 0}
+.feature{background:#1a1a3e;padding:1rem;border-radius:8px;border:1px solid #2a2a5a}
+.feature h3{color:#00ff88;font-size:0.95rem;margin-bottom:0.5rem}
+.feature p{color:#888;font-size:0.85rem}
 footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:1px solid #1a1a3e;margin-top:3rem}
 @media(max-width:600px){.input-row{flex-direction:column}h1{font-size:1.8rem}.summary-grid{grid-template-columns:repeat(3,1fr)}}
 </style>
@@ -58,8 +74,13 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <div class="container">
 <header>
 <h1>🛡️ Skill<span>Audit</span></h1>
-<p class="tagline">Security scanner for AI agent skills.<br>Detect credential theft, data exfiltration, prompt injection & more.</p>
+<p class="tagline">Security scanner for AI agent skills.<br>Structural analysis · URL reputation · Intent detection · Batch scanning</p>
+<p class="version">v0.3.0</p>
 </header>
+
+<div class="counter">
+<span class="num" id="scan-count">—</span> skills scanned
+</div>
 
 <div class="scan-box">
 <h2>Scan a Skill</h2>
@@ -70,42 +91,79 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <div id="results"></div>
 </div>
 
+<div class="recent-scans" id="recent-section" style="display:none">
+<h2>Recent Scans</h2>
+<ul class="recent-list" id="recent-list"></ul>
+</div>
+
+<section>
+<h2>What's New in v0.3</h2>
+<div class="features">
+<div class="feature"><h3>🧠 Smarter Analysis</h3><p>Structural pattern detection, URL reputation, natural language intent analysis, context-weighted scoring</p></div>
+<div class="feature"><h3>📦 Batch Scanning</h3><p>Scan up to 20 skill URLs in one request. Perfect for auditing entire registries.</p></div>
+<div class="feature"><h3>🔄 Version Compare</h3><p>Diff two versions of a skill. See new findings, resolved issues, and risk delta.</p></div>
+<div class="feature"><h3>🔗 Shareable Results</h3><p>Every scan gets a unique URL. Share audit results with your team.</p></div>
+<div class="feature"><h3>📡 Webhooks</h3><p>Add a callback URL to any scan. Get results POSTed to your system.</p></div>
+<div class="feature"><h3>📋 OpenAPI Spec</h3><p>Auto-discoverable API at <a href="/openapi.json">/openapi.json</a>. Agent-friendly.</p></div>
+</div>
+</section>
+
 <section>
 <h2>API Endpoints</h2>
 <table>
 <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
-<tr><td><code>POST</code></td><td><code>/scan/url</code></td><td>Scan a skill by URL</td></tr>
-<tr><td><code>POST</code></td><td><code>/scan/content</code></td><td>Scan raw skill content</td></tr>
-<tr><td><code>GET</code></td><td><code>/rules</code></td><td>List all detection rules</td></tr>
-<tr><td><code>GET</code></td><td><code>/history</code></td><td>Recent scan history (last 100)</td></tr>
-<tr><td><code>GET</code></td><td><code>/stats</code></td><td>Scan statistics &amp; risk distribution</td></tr>
-<tr><td><code>POST</code></td><td><code>/badge/request</code></td><td>Submit a skill URL for badge review</td></tr>
-<tr><td><code>GET</code></td><td><code>/badge/:domain</code></td><td>Check a domain's trust badge</td></tr>
+<tr><td><code>POST</code></td><td><code>/scan/url</code></td><td>Scan by URL (+ optional callback)</td></tr>
+<tr><td><code>POST</code></td><td><code>/scan/content</code></td><td>Scan raw content</td></tr>
+<tr><td><code>POST</code></td><td><code>/scan/batch</code></td><td>Batch scan (up to 20 URLs)</td></tr>
+<tr><td><code>POST</code></td><td><code>/scan/compare</code></td><td>Compare two skill versions</td></tr>
+<tr><td><code>GET</code></td><td><code>/scan/:id</code></td><td>Get shared scan result</td></tr>
+<tr><td><code>GET</code></td><td><code>/rules</code></td><td>List detection rules</td></tr>
+<tr><td><code>GET</code></td><td><code>/history</code></td><td>Recent scan history</td></tr>
+<tr><td><code>GET</code></td><td><code>/stats</code></td><td>Scan statistics</td></tr>
+<tr><td><code>POST</code></td><td><code>/badge/request</code></td><td>Request trust badge</td></tr>
+<tr><td><code>GET</code></td><td><code>/badge/:domain</code></td><td>Check domain badge</td></tr>
+<tr><td><code>GET</code></td><td><code>/openapi.json</code></td><td>OpenAPI 3.0 spec</td></tr>
 <tr><td><code>GET</code></td><td><code>/health</code></td><td>Health check</td></tr>
 </table>
 </section>
 
 <section>
 <h2>Quick Start</h2>
-<pre>curl -X POST https://skillaudit.vercel.app/scan/url \
+<pre>// Single scan
+curl -X POST https://skillaudit.vercel.app/scan/url \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/SKILL.md"}'</pre>
+  -d '{"url": "https://example.com/SKILL.md"}'
+
+// Batch scan
+curl -X POST https://skillaudit.vercel.app/scan/batch \
+  -H "Content-Type: application/json" \
+  -d '{"urls": ["https://a.com/SKILL.md", "https://b.com/SKILL.md"]}'
+
+// Compare versions
+curl -X POST https://skillaudit.vercel.app/scan/compare \
+  -H "Content-Type: application/json" \
+  -d '{"oldUrl": "https://example.com/v1/SKILL.md", "newUrl": "https://example.com/v2/SKILL.md"}'
+
+// With webhook callback
+curl -X POST https://skillaudit.vercel.app/scan/url \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/SKILL.md", "callback": "https://your-server.com/webhook"}'</pre>
 </section>
 
 <section>
 <h2>Trust Badges</h2>
 <div class="badge-section">
 <p>Submit skills for review and earn a trust badge for your domain.</p>
-<p style="margin-top:0.5rem"><strong style="color:#00ff88">verified-safe</strong> — Scanned clean, no issues found<br>
-<strong style="color:#ffaa00">flagged</strong> — Issues detected, review needed<br>
+<p style="margin-top:0.5rem"><strong style="color:#00ff88">verified-safe</strong> — Scanned clean<br>
+<strong style="color:#ffaa00">flagged</strong> — Issues detected<br>
 <strong style="color:#888">unaudited</strong> — Not yet scanned</p>
 </div>
 </section>
 
 <section>
-<h2>Detection Rules</h2>
-<p style="color:#888;margin-bottom:1rem">14 rules across credential theft, data exfiltration, prompt injection, code execution, crypto theft, reverse shells, agent manipulation & more.</p>
-<p><a href="/rules">View all rules →</a></p>
+<h2>Detection Engine</h2>
+<p style="color:#888;margin-bottom:1rem">15+ rules across credential theft, data exfiltration, prompt injection, code execution, crypto theft, reverse shells, agent manipulation & more. Now with structural analysis, URL reputation checking, and natural language intent detection.</p>
+<p><a href="/rules">View all rules →</a> · <a href="/openapi.json">OpenAPI spec →</a></p>
 </section>
 
 <footer>
@@ -114,12 +172,28 @@ Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠 — <
 </div>
 
 <script>
+async function loadStats(){
+  try{
+    const r=await fetch('/stats');const d=await r.json();
+    document.getElementById('scan-count').textContent=d.totalScans||0;
+  }catch{}
+}
+async function loadRecent(){
+  try{
+    const r=await fetch('/history?limit=5');const d=await r.json();
+    if(d.scans&&d.scans.length>0){
+      const list=document.getElementById('recent-list');
+      list.innerHTML=d.scans.slice(0,5).map(s=>{
+        const u=s.url.length>50?s.url.substring(0,47)+'...':s.url;
+        return`<li><span class="recent-url" title="${s.url}">${u}</span><span class="risk-pill pill-${s.riskLevel}">${s.riskLevel}</span></li>`;
+      }).join('');
+      document.getElementById('recent-section').style.display='block';
+    }
+  }catch{}
+}
 async function runScan(){
-  const input=document.getElementById('url-input');
-  const btn=document.getElementById('scan-btn');
-  const results=document.getElementById('results');
-  const url=input.value.trim();
-  if(!url){input.focus();return}
+  const input=document.getElementById('url-input'),btn=document.getElementById('scan-btn'),results=document.getElementById('results');
+  const url=input.value.trim();if(!url){input.focus();return}
   btn.disabled=true;btn.textContent='Scanning...';results.style.display='none';
   try{
     const res=await fetch('/scan/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
@@ -127,6 +201,10 @@ async function runScan(){
     if(data.error){results.innerHTML='<p style="color:#ff4444">Error: '+data.error+'</p>';results.style.display='block';return}
     let html='<div class="result-header risk-'+data.riskLevel+'"><span>Risk: '+data.riskLevel.toUpperCase()+'</span><span>Score: '+data.riskScore+'</span></div>';
     html+='<div class="verdict">'+data.verdict+'</div>';
+    if(data.shareUrl){
+      const fullUrl=location.origin+data.shareUrl;
+      html+=`<div class="share-link">🔗 <input readonly value="${fullUrl}" onclick="this.select()"/><button onclick="navigator.clipboard.writeText('${fullUrl}')">Copy</button></div>`;
+    }
     html+='<div class="summary-grid">';
     html+='<div class="summary-item"><div class="num">'+data.summary.total+'</div><div class="label">Findings</div></div>';
     html+='<div class="summary-item"><div class="num" style="color:#ff0044">'+data.summary.critical+'</div><div class="label">Critical</div></div>';
@@ -138,15 +216,18 @@ async function runScan(){
     if(data.findings.length>0){
       html+='<ul class="findings">';
       data.findings.forEach(f=>{
-        html+='<li class="sev-'+f.severity+'"><span class="finding-id">'+f.ruleId+'</span><span class="finding-sev" style="background:'+(f.severity==='critical'?'#ff0044':f.severity==='high'?'#ff4444':f.severity==='medium'?'#ffaa00':'#88ff00')+'">'+f.severity+'</span>'+f.name+' <span style="color:#666">— line '+f.line+'</span></li>';
+        const ctx=f.context?' <span style="color:#555">['+f.context+']</span>':'';
+        html+='<li class="sev-'+f.severity+'"><span class="finding-id">'+f.ruleId+'</span><span style="padding:0.1rem 0.4rem;border-radius:4px;font-size:0.7rem;text-transform:uppercase;font-weight:700;margin-right:0.5rem;background:'+(f.severity==='critical'?'#ff0044':f.severity==='high'?'#ff4444':f.severity==='medium'?'#ffaa00':'#88ff00')+'">'+f.severity+'</span>'+f.name+ctx+' <span style="color:#666">— line '+f.line+'</span></li>';
       });
       html+='</ul>';
     }
     results.innerHTML=html;results.style.display='block';
+    loadStats();loadRecent();
   }catch(e){results.innerHTML='<p style="color:#ff4444">Error: '+e.message+'</p>';results.style.display='block'}
   finally{btn.disabled=false;btn.textContent='Scan'}
 }
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')runScan()});
+loadStats();loadRecent();
 </script>
 </body>
 </html>

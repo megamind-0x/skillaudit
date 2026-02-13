@@ -1,6 +1,6 @@
 {
   "name": "skillaudit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Security scanner for AI agent skills",
   "main": "src/server.js",
   "scripts": {

@@ -51,7 +51,17 @@ const badgedDomains = new Set();
 function recordScan(url, result) {
   totalScans++;
   const id = crypto.randomBytes(6).toString('hex');
-  const entry = { id, url, timestamp: new Date().toISOString(), riskLevel: result.riskLevel, riskScore: result.riskScore };
+  const entry = { 
+    id, 
+    url, 
+    timestamp: new Date().toISOString(), 
+    riskLevel: result.riskLevel, 
+    riskScore: result.riskScore,
+    // v0.6.0: Include capability data for stats
+    capabilityStats: result.capabilityStats,
+    capabilities: result.capabilities,
+    threatChains: result.threatChains 
+  };
   scanHistory.unshift(entry);
   if (scanHistory.length > MAX_HISTORY) scanHistory.pop();
   sharedScans.set(id, { ...result, id, url });
@@ -121,7 +131,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
     return res.json({
-      name: 'SkillAudit', version: '0.5.0',
+      name: 'SkillAudit', version: '0.6.0',
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
@@ -146,7 +156,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '0.5.0', uptime: process.uptime() });
+  res.json({ status: 'ok', version: '0.6.0', uptime: process.uptime() });
 });
 
 // --- Rules ---
@@ -253,6 +263,63 @@ app.post('/scan/compare', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Enhanced Deep Scan (v0.6.0) ---
+app.post('/scan/deep', scanLimiter, async (req, res) => {
+  const { url, content } = req.body;
+  
+  try {
+    let textContent;
+    let sourceUrl;
+    
+    if (url) {
+      textContent = await fetchUrl(url);
+      sourceUrl = url;
+    } else if (content) {
+      textContent = content;
+      sourceUrl = 'inline';
+    } else {
+      return res.status(400).json({ error: 'Either url or content is required' });
+    }
+    
+    const result = scanContent(textContent, sourceUrl);
+    const scanId = recordScan(sourceUrl, result);
+    
+    // Enhanced response with full capability analysis
+    res.json({
+      ...result,
+      scanId,
+      enhancedAnalysis: true,
+      capabilityBreakdown: result.capabilities,
+      threatAnalysis: result.threatChains,
+      permissionRequirements: result.permissions,
+      riskAssessment: {
+        traditionalRisk: result.riskLevel,
+        capabilityRisk: result.capabilityStats.threatChains > 0 ? 'high' : 'low',
+        combinedVerdict: result.verdict
+      }
+    });
+  } catch (err) {
+    res.status(400).json({ error: `Failed to process: ${err.message}` });
+  }
+});
+
+// --- Capability Breakdown (v0.6.0) ---
+app.get('/capabilities/:id', (req, res) => {
+  const result = sharedScans.get(req.params.id);
+  if (!result) return res.status(404).json({ error: 'Scan not found' });
+  
+  res.json({
+    scanId: req.params.id,
+    source: result.source,
+    scannedAt: result.scannedAt,
+    capabilities: result.capabilities || {},
+    threatChains: result.threatChains || [],
+    permissions: result.permissions || {},
+    capabilityStats: result.capabilityStats || {},
+    analysisVersion: result.version
+  });
+});
+
 // --- Shared Scan Result (JSON) ---
 app.get('/scan/:id', (req, res) => {
   const result = sharedScans.get(req.params.id);
@@ -277,16 +344,49 @@ app.get('/history', (req, res) => {
 app.get('/stats', (req, res) => {
   const riskDist = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0 };
   const domains = {};
+  const capabilityStats = {};
+  const threatChainStats = {};
+  
   for (const s of scanHistory) {
     riskDist[s.riskLevel] = (riskDist[s.riskLevel] || 0) + 1;
     const d = getDomain(s.url);
     if (d) domains[d] = true;
+    
+    // Collect capability stats (v0.6.0)
+    if (s.capabilityStats) {
+      // Count threat chains
+      if (s.threatChains) {
+        s.threatChains.forEach(chain => {
+          threatChainStats[chain.name] = (threatChainStats[chain.name] || 0) + 1;
+        });
+      }
+      
+      // Count capabilities
+      if (s.capabilities) {
+        Object.keys(s.capabilities).forEach(cap => {
+          capabilityStats[cap] = (capabilityStats[cap] || 0) + 1;
+        });
+      }
+    }
   }
+  
   res.json({
     totalScans,
     recentScans: scanHistory.length,
     badgedDomains: Object.keys(domains).length + badges.size,
     riskDistribution: riskDist,
+    capabilityAnalysis: {
+      mostCommonCapabilities: Object.entries(capabilityStats)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 10)
+        .map(([cap, count]) => ({ capability: cap, count })),
+      threatChains: Object.entries(threatChainStats)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 10)
+        .map(([chain, count]) => ({ threatChain: chain, count })),
+      totalWithCapabilities: Object.keys(capabilityStats).length,
+      totalWithThreatChains: Object.keys(threatChainStats).length
+    }
   });
 });
 
@@ -536,7 +636,7 @@ app.get('/openapi.json', (req, res) => {
   res.json({
     openapi: '3.0.3',
     info: {
-      title: 'SkillAudit API', version: '0.5.0',
+      title: 'SkillAudit API', version: '0.6.0',
       description: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
       contact: { name: 'Megamind_0x', url: 'https://moltbook.com/u/Megamind_0x' },
     },
@@ -689,5 +789,5 @@ function reportNotFound() {
 
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
-  console.log(`🛡️  SkillAudit v0.5.0 running on port ${PORT}`);
+  console.log(`🛡️  SkillAudit v0.6.0 running on port ${PORT}`);
 });

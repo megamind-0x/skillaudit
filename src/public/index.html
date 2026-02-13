@@ -106,8 +106,8 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <div class="container">
 <header>
 <h1>🛡️ Skill<span>Audit</span></h1>
-<p class="tagline">Security scanner for AI agent skills<br>Structural analysis · URL reputation · Intent detection</p>
-<p class="version">v0.5.0</p>
+<p class="tagline">Security scanner for AI agent skills<br>Capability analysis · Threat chains · Permission manifest</p>
+<p class="version">v0.6.0</p>
 </header>
 
 <div class="stats-row">
@@ -139,14 +139,14 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 </div>
 
 <section>
-<h2>What's New in v0.5</h2>
+<h2>What's New in v0.6.0 — Capability Analysis Engine</h2>
 <div class="features">
-<div class="feature"><h3>🦞 Moltbook Sharing</h3><p>Share scan reports directly to Moltbook with one click. Auto-generates posts with risk summary, top findings, and report link.</p></div>
-<div class="feature"><h3>🧮 Lobster Math Solver</h3><p>Automatically solves Moltbook's verification challenges — no manual math needed.</p></div>
-<div class="feature"><h3>🧠 Smarter Suppression</h3><p>Context-aware false positive reduction. Documentation examples, placeholders, and tutorials no longer trigger false alarms.</p></div>
-<div class="feature"><h3>📊 Report Pages</h3><p>Every scan gets a shareable HTML report with dark theme, collapsible findings, and color-coded severity.</p></div>
-<div class="feature"><h3>📦 Batch Scanning</h3><p>Scan up to 20 skill URLs in one request. Audit entire registries.</p></div>
-<div class="feature"><h3>🔄 Version Compare</h3><p>Diff two versions. See new findings, resolved issues, and risk delta.</p></div>
+<div class="feature"><h3>🎯 Capability Fingerprinting</h3><p>Detects what skills can DO, not just pattern matching. Identifies file access, network requests, code execution, credential access, and more.</p></div>
+<div class="feature"><h3>⛓️ Threat Chain Detection</h3><p>Spots dangerous capability combinations like credential access + network outbound = data exfiltration. MITRE-inspired threat modeling.</p></div>
+<div class="feature"><h3>📋 Permission Manifest</h3><p>Clear "this skill needs" summary. Know exactly what permissions a skill requires before installation.</p></div>
+<div class="feature"><h3>🔍 Deep Scan API</h3><p>Enhanced /scan/deep endpoint with full capability breakdown, threat analysis, and risk assessment.</p></div>
+<div class="feature"><h3>📊 Capability Analytics</h3><p>Track most common capabilities and threat patterns across the ecosystem in /stats endpoint.</p></div>
+<div class="feature"><h3>🧠 Context-Aware Analysis</h3><p>High confidence for executable code blocks, reduced confidence for documentation examples. Smart suppression.</p></div>
 </div>
 </section>
 
@@ -156,13 +156,15 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.85rem;border-top:
 <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
 <tr><td><code>POST</code></td><td><code>/scan/url</code></td><td>Scan by URL (+ optional callback)</td></tr>
 <tr><td><code>POST</code></td><td><code>/scan/content</code></td><td>Scan raw content</td></tr>
+<tr><td><code>POST</code></td><td><code>/scan/deep</code></td><td>🆕 Enhanced scan with full capability analysis</td></tr>
 <tr><td><code>POST</code></td><td><code>/scan/batch</code></td><td>Batch scan (up to 20 URLs)</td></tr>
 <tr><td><code>POST</code></td><td><code>/scan/compare</code></td><td>Compare two skill versions</td></tr>
 <tr><td><code>GET</code></td><td><code>/scan/:id</code></td><td>Get scan result (JSON)</td></tr>
+<tr><td><code>GET</code></td><td><code>/capabilities/:id</code></td><td>🆕 Get capability breakdown for scan</td></tr>
 <tr><td><code>GET</code></td><td><code>/report/:id</code></td><td>View scan report (HTML)</td></tr>
 <tr><td><code>GET</code></td><td><code>/rules</code></td><td>List detection rules</td></tr>
 <tr><td><code>GET</code></td><td><code>/history</code></td><td>Recent scan history</td></tr>
-<tr><td><code>GET</code></td><td><code>/stats</code></td><td>Scan statistics</td></tr>
+<tr><td><code>GET</code></td><td><code>/stats</code></td><td>Scan statistics + capability analytics 🆕</td></tr>
 <tr><td><code>POST</code></td><td><code>/badge/request</code></td><td>Request trust badge</td></tr>
 <tr><td><code>GET</code></td><td><code>/badge/:domain</code></td><td>Check domain badge</td></tr>
 <tr><td><code>POST</code></td><td><code>/share/moltbook</code></td><td>Share scan to Moltbook 🦞</td></tr>

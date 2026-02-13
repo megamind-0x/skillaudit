@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { analyzeCapabilities } = require('./capabilities');
 
 const rules = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'rules', 'patterns.json'), 'utf8')
@@ -362,6 +363,28 @@ function scanContent(content, sourceUrl = null) {
   // 4. Intent analysis
   findings.push(...analyzeIntent(lines, codeBlockMap));
 
+  // 5. Capability analysis (v0.6.0)
+  const capabilityAnalysis = analyzeCapabilities(content);
+  
+  // Convert threat chains to findings
+  capabilityAnalysis.threatChains.forEach(chain => {
+    findings.push({
+      ruleId: `THREAT_CHAIN_${chain.name}`,
+      severity: chain.severity,
+      category: chain.category,
+      name: `Threat Chain: ${chain.name}`,
+      description: chain.description,
+      line: chain.evidence[Object.keys(chain.evidence)[0]].lines[0], // Use first capability's first line
+      lineContent: `Capability combination: ${chain.capabilities.join(' + ')}`,
+      match: chain.capabilities.join(' + '),
+      context: 'capability_analysis',
+      suppressed: false,
+      threatChain: true,
+      capabilities: chain.capabilities,
+      evidence: chain.evidence
+    });
+  });
+
   // Deduplicate by ruleId + line
   const seen = new Set();
   const deduped = findings.filter(f => {
@@ -390,7 +413,7 @@ function scanContent(content, sourceUrl = null) {
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
-    version: '0.4.0',
+    version: '0.6.0',
     riskLevel: risk,
     riskScore: totalScore,
     summary: {
@@ -402,11 +425,19 @@ function scanContent(content, sourceUrl = null) {
       suppressed: suppressed.length,
     },
     findings: actionable,
-    verdict: totalScore === 0
+    capabilities: capabilityAnalysis.capabilities,
+    threatChains: capabilityAnalysis.threatChains,
+    permissions: capabilityAnalysis.permissions,
+    capabilityStats: {
+      totalCapabilities: capabilityAnalysis.capabilityCount,
+      threatChains: capabilityAnalysis.threatChainCount,
+      riskFactors: capabilityAnalysis.riskFactors
+    },
+    verdict: totalScore === 0 && capabilityAnalysis.threatChainCount === 0
       ? '✅ No issues detected. Skill appears safe.'
-      : totalScore < 10
+      : totalScore < 10 && capabilityAnalysis.threatChainCount === 0
         ? '⚠️ Minor concerns found. Review recommended.'
-        : totalScore < 25
+        : totalScore < 25 && capabilityAnalysis.threatChainCount <= 1
           ? '🔶 Moderate risk. Manual review required before installing.'
           : '🔴 High risk. DO NOT install without thorough manual audit.',
   };

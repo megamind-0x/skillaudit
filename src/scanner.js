@@ -30,12 +30,23 @@ const SUSPICIOUS_DOMAINS = new Set([
   'pastebin.com', 'transfer.sh', 'file.io',
 ]);
 
-// Patterns that indicate a line is documentation/example
-const DOC_PATTERNS = [
-  /YOUR_API_KEY/i, /YOUR_.*_KEY/i, /YOUR_TOKEN/i,
-  /xxx+/i, /REPLACE_WITH/i, /placeholder/i,
-  /<your[_-]/i, /example/i,
-  /^#+\s/, /^\s*[-*]\s.*:/, /```\s*$/,
+// --- Placeholder patterns: if a line contains any of these, it's documentation ---
+const PLACEHOLDER_PATTERNS = [
+  /YOUR_/i, /YOUR\s+/i, /xxx+/i, /REPLACE/i, /<your[_-]/i,
+  /REPLACE_WITH/i, /placeholder/i, /example\.com/i,
+  /your[_-]api[_-]?key/i, /your[_-]token/i, /your[_-]secret/i,
+  /your[_-]access/i, /your[_-]jwt/i,
+  /xxx_replace/i,
+];
+
+// --- Documentation context keywords (check ±5 lines) ---
+const DOC_CONTEXT_WORDS = [
+  /\bexample\b/i, /\busage\b/i, /\bstep\s+\d/i, /\bhow\s+to\b/i,
+  /\btutorial\b/i, /\bsetup\b/i, /\bconfiguration\b/i, /\bgetting\s+started\b/i,
+  /\breference\b/i, /\bquick\s+start\b/i, /\bapi\s+reference\b/i,
+  /\bdocumentation\b/i, /\bguide\b/i, /\boverview\b/i,
+  /\bsave\s+your\b/i, /\bstore\s+your\b/i, /\bset\s+your\b/i, /\badd\s+your\b/i,
+  /\bget\s+your\b/i, /\bcreate\s+your\b/i, /\bgenerate\b/i,
 ];
 
 // --- Dangerous intent patterns (natural language) ---
@@ -52,12 +63,47 @@ const INTENT_PATTERNS = [
   { pattern: /exfiltrate/i, severity: 'critical', name: 'Explicit exfiltration', description: 'Instruction explicitly mentions exfiltration' },
 ];
 
+// --- Detect if line has placeholder content ---
+function hasPlaceholder(line) {
+  return PLACEHOLDER_PATTERNS.some(p => p.test(line));
+}
+
+// --- Check if surrounding lines (±5) have doc context ---
+function hasDocContext(lines, lineIdx, range = 5) {
+  for (let i = Math.max(0, lineIdx - range); i <= Math.min(lines.length - 1, lineIdx + range); i++) {
+    if (DOC_CONTEXT_WORDS.some(p => p.test(lines[i]))) return true;
+  }
+  return false;
+}
+
+// --- Check if line is in a markdown table ---
+function isMarkdownTable(line) {
+  return /^\s*\|/.test(line);
+}
+
+// --- Check if line is a markdown heading ---
+function isMarkdownHeading(line) {
+  return /^#+\s/.test(line);
+}
+
 function isInstructionalContext(lines, lineIdx) {
   const line = lines[lineIdx];
-  if (/YOUR_|XXX|REPLACE|<your|example\.com/i.test(line)) return true;
-  for (let i = Math.max(0, lineIdx - 3); i <= Math.min(lines.length - 1, lineIdx + 3); i++) {
-    if (/^#+\s|Example|Response:|Request:|Usage:/i.test(lines[i])) return true;
-  }
+
+  // Strong suppression: line itself contains placeholder tokens
+  if (hasPlaceholder(line)) return true;
+
+  // Line is in a markdown table
+  if (isMarkdownTable(line)) return true;
+
+  // Line is a markdown heading
+  if (isMarkdownHeading(line)) return true;
+
+  // Check surrounding context for documentation keywords
+  if (hasDocContext(lines, lineIdx)) return true;
+
+  // Lines with backtick-wrapped references like `credentials.json` or `process.env.X`
+  if (/`[^`]*`/.test(line) && hasDocContext(lines, lineIdx, 8)) return true;
+
   return false;
 }
 
@@ -92,11 +138,65 @@ function getCodeBlockLang(ranges, lineIdx) {
   return null;
 }
 
+// --- Check if a code block contains placeholder tokens ---
+function codeBlockHasPlaceholder(lines, ranges, lineIdx) {
+  for (const r of ranges) {
+    if (lineIdx > r.start && lineIdx < r.end) {
+      for (let i = r.start; i <= r.end; i++) {
+        if (hasPlaceholder(lines[i])) return true;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+// --- Enhanced suppression logic ---
+function shouldSuppress(lines, lineIdx, match, ruleId, codeBlockMap, codeBlockRanges) {
+  const line = lines[lineIdx];
+
+  // 1. Line contains placeholder tokens → ALWAYS suppress
+  if (hasPlaceholder(line)) return true;
+
+  // 2. Inside code block with placeholder tokens → suppress
+  if (codeBlockMap[lineIdx] && codeBlockHasPlaceholder(lines, codeBlockRanges, lineIdx)) return true;
+
+  // 3. Surrounding lines have doc context keywords → weight toward suppression
+  if (hasDocContext(lines, lineIdx)) {
+    // For credential/token rules in doc context, suppress
+    if (['CRED_ENV_READ', 'TOKEN_STEAL', 'CRED_ENV_SAFE'].includes(ruleId)) return true;
+    // For other rules in doc context with code blocks, suppress
+    if (codeBlockMap[lineIdx]) return true;
+  }
+
+  // 4. Markdown table lines → suppress credential references
+  if (isMarkdownTable(line) && ['CRED_ENV_READ', 'TOKEN_STEAL'].includes(ruleId)) return true;
+
+  // 5. Authorization: Bearer in curl commands → suppress if placeholder nearby
+  if (/Authorization:\s*Bearer/i.test(line)) {
+    if (hasPlaceholder(line) || codeBlockMap[lineIdx]) return true;
+  }
+
+  // 6. credentials.json in "save your credentials" / "store your" context → suppress
+  if (/credentials\.json/i.test(match)) {
+    if (hasDocContext(lines, lineIdx, 8)) return true;
+    // backtick-wrapped reference
+    if (/`credentials\.json`/.test(line)) return true;
+  }
+
+  // 7. process.env references in documentation → suppress
+  if (/process\.env\./i.test(match) && hasDocContext(lines, lineIdx, 8)) return true;
+
+  // 8. General: if line is in code block and surrounding prose is documentation
+  if (codeBlockMap[lineIdx] && hasDocContext(lines, lineIdx, 8)) return true;
+
+  return false;
+}
+
 // --- Structural analysis: read → exfiltrate pattern ---
-function detectStructuralPatterns(content, lines) {
+function detectStructuralPatterns(content, lines, codeBlockMap, codeBlockRanges) {
   const findings = [];
 
-  // Detect read-file + network-request in same flow
   const readPatterns = [
     /readFile/i, /fs\.read/i, /cat\s+/i, /open\s*\(/i,
     /read\s+.*file/i, /load\s+.*config/i, /read\s+.*\.env/i,
@@ -108,27 +208,34 @@ function detectStructuralPatterns(content, lines) {
     /send\s+.*to\s+http/i, /POST\s+.*http/i,
   ];
 
-  let hasRead = false, hasNet = false;
   let readLines = [], netLines = [];
 
   for (let i = 0; i < lines.length; i++) {
+    // Skip lines in doc-context code blocks
+    if (codeBlockMap[i] && hasDocContext(lines, codeBlockRanges, 8)) continue;
+
     for (const p of readPatterns) {
-      if (p.test(lines[i])) { hasRead = true; readLines.push(i + 1); break; }
+      if (p.test(lines[i])) { readLines.push(i + 1); break; }
     }
     for (const p of netPatterns) {
-      if (p.test(lines[i])) { hasNet = true; netLines.push(i + 1); break; }
+      if (p.test(lines[i])) { netLines.push(i + 1); break; }
     }
   }
 
-  if (hasRead && hasNet) {
+  // Only flag if BOTH read and net happen outside documentation context
+  // Filter out lines that are in documentation context
+  const realReadLines = readLines.filter(ln => !isInstructionalContext(lines, ln - 1));
+  const realNetLines = netLines.filter(ln => !isInstructionalContext(lines, ln - 1));
+
+  if (realReadLines.length > 0 && realNetLines.length > 0) {
     findings.push({
       ruleId: 'STRUCT_READ_EXFIL',
       severity: 'high',
       category: 'structural',
       name: 'Read → Network pattern detected',
-      description: `Skill reads files (lines ${readLines.slice(0, 3).join(',')}) and makes network requests (lines ${netLines.slice(0, 3).join(',')}). Potential data exfiltration flow.`,
-      line: readLines[0],
-      lineContent: lines[readLines[0] - 1]?.trim().substring(0, 200) || '',
+      description: `Skill reads files (lines ${realReadLines.slice(0, 3).join(',')}) and makes network requests (lines ${realNetLines.slice(0, 3).join(',')}). Potential data exfiltration flow.`,
+      line: realReadLines[0],
+      lineContent: lines[realReadLines[0] - 1]?.trim().substring(0, 200) || '',
       match: 'structural',
       suppressed: false,
     });
@@ -147,7 +254,6 @@ function analyzeUrls(content, lines) {
     while ((match = urlRegex.exec(lines[i])) !== null) {
       try {
         const hostname = new URL(match[0]).hostname.toLowerCase();
-        // Check against suspicious domains
         for (const sd of SUSPICIOUS_DOMAINS) {
           if (hostname === sd || hostname.endsWith('.' + sd)) {
             findings.push({
@@ -163,7 +269,6 @@ function analyzeUrls(content, lines) {
             });
           }
         }
-        // Flag raw IP addresses
         if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
           findings.push({
             ruleId: 'URL_RAW_IP',
@@ -189,7 +294,6 @@ function analyzeUrls(content, lines) {
 function analyzeIntent(lines, codeBlockMap) {
   const findings = [];
   for (let i = 0; i < lines.length; i++) {
-    // Only check prose (non-code) lines
     if (codeBlockMap[i]) continue;
     for (const ip of INTENT_PATTERNS) {
       if (ip.pattern.test(lines[i])) {
@@ -215,21 +319,19 @@ function scanContent(content, sourceUrl = null) {
   const lines = content.split('\n');
   const { map: codeBlockMap, ranges: codeBlockRanges } = buildCodeBlockMap(lines);
 
-  // 1. Rule-based pattern matching (with context weighting)
+  // 1. Rule-based pattern matching (with enhanced context suppression)
   for (const rule of rules) {
     for (const patternStr of rule.patterns) {
       const regex = new RegExp(patternStr, 'gi');
       for (let i = 0; i < lines.length; i++) {
         const matches = lines[i].match(regex);
         if (matches) {
-          const isDoc = isInstructionalContext(lines, i);
           const inCodeBlock = codeBlockMap[i];
           const blockLang = getCodeBlockLang(codeBlockRanges, i);
+          const suppressed = shouldSuppress(lines, i, matches[0], rule.id, codeBlockMap, codeBlockRanges);
 
-          // Context weighting: credential patterns in bash/shell blocks are riskier
-          let adjustedSeverity = isDoc ? 'info' : rule.severity;
-          if (!isDoc && inCodeBlock && ['bash', 'sh', 'shell', 'zsh'].includes(blockLang)) {
-            // Bump medium → high, high → critical for executable code blocks
+          let adjustedSeverity = suppressed ? 'info' : rule.severity;
+          if (!suppressed && inCodeBlock && ['bash', 'sh', 'shell', 'zsh'].includes(blockLang)) {
             if (adjustedSeverity === 'medium') adjustedSeverity = 'high';
             else if (adjustedSeverity === 'high') adjustedSeverity = 'critical';
           }
@@ -244,7 +346,7 @@ function scanContent(content, sourceUrl = null) {
             lineContent: lines[i].trim().substring(0, 200),
             match: matches[0],
             context: inCodeBlock ? `code:${blockLang || 'unknown'}` : 'prose',
-            suppressed: isDoc,
+            suppressed,
           });
         }
       }
@@ -252,7 +354,7 @@ function scanContent(content, sourceUrl = null) {
   }
 
   // 2. Structural analysis
-  findings.push(...detectStructuralPatterns(content, lines));
+  findings.push(...detectStructuralPatterns(content, lines, codeBlockMap, codeBlockRanges));
 
   // 3. URL reputation
   findings.push(...analyzeUrls(content, lines));
@@ -288,7 +390,7 @@ function scanContent(content, sourceUrl = null) {
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
-    version: '0.3.0',
+    version: '0.4.0',
     riskLevel: risk,
     riskScore: totalScore,
     summary: {

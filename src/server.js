@@ -5,9 +5,38 @@ const http = require('http');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
+const { paymentMiddleware, x402ResourceServer } = require('@x402/express');
+const { ExactEvmScheme } = require('@x402/evm/exact/server');
+const { HTTPFacilitatorClient } = require('@x402/core/server');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+
+// --- x402 Payment Configuration ---
+const SKILLAUDIT_WALLET = process.env.SKILLAUDIT_WALLET || '0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c';
+const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://facilitator.x402.org';
+
+const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+const resourceServer = new x402ResourceServer(facilitatorClient)
+  .register('eip155:8453', new ExactEvmScheme());
+
+const x402Routes = {
+  'POST /scan/deep': {
+    accepts: { scheme: 'exact', price: '$0.05', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
+    description: 'Deep scan with full capability analysis — $0.05 USDC on Base',
+  },
+  'POST /scan/batch': {
+    accepts: { scheme: 'exact', price: '$0.10', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
+    description: 'Batch scan up to 20 URLs — $0.10 USDC on Base',
+  },
+  'POST /scan/compare': {
+    accepts: { scheme: 'exact', price: '$0.05', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
+    description: 'Compare two skill versions — $0.05 USDC on Base',
+  },
+};
+
+// syncFacilitatorOnStart=false to avoid crash if facilitator is unreachable at boot
+app.use(paymentMiddleware(x402Routes, resourceServer, undefined, undefined, false));
 
 // --- API Keys ---
 const API_KEYS = new Set((process.env.SKILLAUDIT_API_KEYS || 'sk-skillaudit-dev').split(','));
@@ -83,7 +112,7 @@ function fetchUrl(url) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Request timeout (15s)')), 15000);
     const client = url.startsWith('https') ? https : http;
-    client.get(url, { headers: { 'User-Agent': 'SkillAudit/0.5' }, timeout: 15000 }, (res) => {
+    client.get(url, { headers: { 'User-Agent': 'SkillAudit/0.7' }, timeout: 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         clearTimeout(timeout);
         return fetchUrl(res.headers.location).then(resolve).catch(reject);
@@ -106,7 +135,7 @@ function fireCallback(callbackUrl, result) {
     const payload = JSON.stringify(result);
     const options = {
       hostname: url.hostname, port: url.port, path: url.pathname + url.search,
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'SkillAudit/0.5-webhook' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'SkillAudit/0.7-webhook' },
       timeout: 10000,
     };
     const client = url.protocol === 'https:' ? https : http;
@@ -131,7 +160,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
     return res.json({
-      name: 'SkillAudit', version: '0.6.1',
+      name: 'SkillAudit', version: '0.7.0',
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
@@ -156,7 +185,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '0.6.1', uptime: process.uptime() });
+  res.json({ status: 'ok', version: '0.7.0', uptime: process.uptime() });
 });
 
 // --- Rules ---
@@ -636,7 +665,7 @@ app.get('/openapi.json', (req, res) => {
   res.json({
     openapi: '3.0.3',
     info: {
-      title: 'SkillAudit API', version: '0.6.1',
+      title: 'SkillAudit API', version: '0.7.0',
       description: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
       contact: { name: 'Megamind_0x', url: 'https://moltbook.com/u/Megamind_0x' },
     },
@@ -644,8 +673,8 @@ app.get('/openapi.json', (req, res) => {
     paths: {
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
-      '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs', responses: { '200': { description: 'Batch results' } } } },
-      '/scan/compare': { post: { summary: 'Compare two skill versions', responses: { '200': { description: 'Comparison result' } } } },
+      '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
+      '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },
       '/rules': { get: { summary: 'List detection rules', responses: { '200': { description: 'Rule list' } } } },
@@ -789,5 +818,5 @@ function reportNotFound() {
 
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
-  console.log(`🛡️  SkillAudit v0.6.1 running on port ${PORT}`);
+  console.log(`🛡️  SkillAudit v0.7.0 running on port ${PORT}`);
 });

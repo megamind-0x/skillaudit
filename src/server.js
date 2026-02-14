@@ -144,12 +144,21 @@ function setCachedUrl(url, data) {
   }
 }
 
-// --- Scan History & Shared Results (in-memory) ---
+// --- Redis persistence ---
+const db = require('./redis');
+
+// --- Scan History & Shared Results (in-memory + Redis) ---
 const MAX_HISTORY = 100;
 const scanHistory = [];
 let totalScans = parseInt(process.env.SCAN_COUNT_BASE || '0', 10);
 const sharedScans = new Map();
 const badgedDomains = new Set();
+
+// Load persisted scan count on startup
+(async () => {
+  const count = await db.getScanCount();
+  if (count > totalScans) totalScans = count;
+})();
 
 function recordScan(url, result) {
   totalScans++;
@@ -160,7 +169,6 @@ function recordScan(url, result) {
     timestamp: new Date().toISOString(), 
     riskLevel: result.riskLevel, 
     riskScore: result.riskScore,
-    // v0.6.1: Include capability data for stats
     capabilityStats: result.capabilityStats,
     capabilities: result.capabilities,
     threatChains: result.threatChains 
@@ -171,6 +179,14 @@ function recordScan(url, result) {
   if (sharedScans.size > 500) {
     const oldest = sharedScans.keys().next().value;
     sharedScans.delete(oldest);
+  }
+  
+  // Persist to Redis (fire-and-forget)
+  db.incrScanCount();
+  db.incrRisk(result.riskLevel || 'unknown');
+  db.storeScanResult({ url, ...result });
+  if (result.threatChains) {
+    result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
   return id;
 }
@@ -502,40 +518,37 @@ app.get('/history', (req, res) => {
 });
 
 // --- Stats ---
-app.get('/stats', (req, res) => {
-  const riskDist = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0 };
-  const domains = {};
-  const capabilityStats = {};
-  const threatChainStats = {};
+app.get('/stats', async (req, res) => {
+  // Try Redis first for persisted stats
+  const [redisCount, redisRisk, redisThreats, recentScans] = await Promise.all([
+    db.getScanCount(),
+    db.getRiskDistribution(),
+    db.getThreatTypes(),
+    db.getRecentScans(10),
+  ]);
+
+  const persistedTotal = Math.max(redisCount || 0, totalScans);
   
+  // Merge in-memory stats for capabilities (not persisted yet)
+  const capabilityStats = {};
   for (const s of scanHistory) {
-    riskDist[s.riskLevel] = (riskDist[s.riskLevel] || 0) + 1;
-    const d = getDomain(s.url);
-    if (d) domains[d] = true;
-    
-    // Collect capability stats (v0.6.1)
-    if (s.capabilityStats) {
-      // Count threat chains
-      if (s.threatChains) {
-        s.threatChains.forEach(chain => {
-          threatChainStats[chain.name] = (threatChainStats[chain.name] || 0) + 1;
-        });
-      }
-      
-      // Count capabilities
-      if (s.capabilities) {
-        Object.keys(s.capabilities).forEach(cap => {
-          capabilityStats[cap] = (capabilityStats[cap] || 0) + 1;
-        });
-      }
+    if (s.capabilities) {
+      Object.keys(s.capabilities).forEach(cap => {
+        capabilityStats[cap] = (capabilityStats[cap] || 0) + 1;
+      });
     }
   }
+
+  const riskDist = Object.keys(redisRisk).length > 0 ? redisRisk : 
+    { clean: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+  
+  const threatChainStats = redisThreats || {};
   
   res.json({
-    totalScans,
-    recentScans: scanHistory.length,
-    badgedDomains: Object.keys(domains).length + badges.size,
+    totalScans: persistedTotal,
+    recentScans: recentScans.length || scanHistory.length,
     riskDistribution: riskDist,
+    recentScanList: recentScans,
     capabilityAnalysis: {
       mostCommonCapabilities: Object.entries(capabilityStats)
         .sort(([,a], [,b]) => b - a)

@@ -147,7 +147,7 @@ function setCachedUrl(url, data) {
 // --- Scan History & Shared Results (in-memory) ---
 const MAX_HISTORY = 100;
 const scanHistory = [];
-let totalScans = 0;
+let totalScans = parseInt(process.env.SCAN_COUNT_BASE || '0', 10);
 const sharedScans = new Map();
 const badgedDomains = new Set();
 

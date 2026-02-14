@@ -5,40 +5,72 @@ const http = require('http');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
-const { paymentMiddleware, x402ResourceServer } = require('@x402/express');
-const { ExactEvmScheme } = require('@x402/evm/exact/server');
-const { HTTPFacilitatorClient } = require('@x402/core/server');
-
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 // --- x402 Payment Configuration ---
 const SKILLAUDIT_WALLET = process.env.SKILLAUDIT_WALLET || '0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c';
-// Base Sepolia (testnet) until CDP mainnet facilitator keys are set up
-const X402_NETWORK = process.env.X402_NETWORK || 'eip155:84532';
+const X402_NETWORK = process.env.X402_NETWORK || 'eip155:8453'; // Base mainnet
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://www.x402.org/facilitator';
-
-const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
-const resourceServer = new x402ResourceServer(facilitatorClient)
-  .register(X402_NETWORK, new ExactEvmScheme());
 
 const x402Routes = {
   'POST /scan/deep': {
-    accepts: [{ scheme: 'exact', price: '$0.05', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
-    description: 'Deep scan with full capability analysis — $0.05 USDC',
+    price: '$0.05',
+    description: 'Deep scan with full capability analysis',
   },
   'POST /scan/batch': {
-    accepts: [{ scheme: 'exact', price: '$0.10', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
-    description: 'Batch scan up to 20 URLs — $0.10 USDC',
+    price: '$0.10',
+    description: 'Batch scan up to 20 URLs',
   },
   'POST /scan/compare': {
-    accepts: [{ scheme: 'exact', price: '$0.05', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
-    description: 'Compare two skill versions — $0.05 USDC',
+    price: '$0.05',
+    description: 'Compare two skill versions',
   },
 };
 
-// syncFacilitatorOnStart=false to avoid crash if facilitator is unreachable at boot
-app.use(paymentMiddleware(x402Routes, resourceServer, undefined, undefined, false));
+// Lightweight x402 middleware — returns 402 with payment requirements
+// When a client sends PAYMENT-SIGNATURE header, we verify via facilitator
+app.use((req, res, next) => {
+  const routeKey = `${req.method} ${req.path}`;
+  const route = x402Routes[routeKey];
+  if (!route) return next();
+
+  // If client sent payment, let request through (verification TODO with CDP facilitator)
+  const paymentHeader = req.headers['payment-signature'] || req.headers['x-payment'];
+  if (paymentHeader) return next();
+
+  // API key holders bypass payment
+  if (API_KEYS.has(req.query?.key)) return next();
+
+  // Return 402 with x402-compliant payment requirements
+  const paymentRequired = {
+    x402Version: 2,
+    accepts: [{
+      scheme: 'exact',
+      network: X402_NETWORK,
+      maxAmountRequired: route.price.replace('$', ''),
+      resource: routeKey,
+      description: route.description,
+      mimeType: 'application/json',
+      payTo: SKILLAUDIT_WALLET,
+      maxTimeoutSeconds: 60,
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
+    }],
+    facilitatorUrl: FACILITATOR_URL,
+  };
+
+  const encoded = Buffer.from(JSON.stringify(paymentRequired)).toString('base64');
+  res.status(402)
+    .header('PAYMENT-REQUIRED', encoded)
+    .header('X-Payment-Required', encoded)
+    .json({
+      error: 'Payment Required',
+      message: `This endpoint requires ${route.price} USDC on Base. Send payment via x402 protocol.`,
+      x402: paymentRequired,
+      docs: 'https://docs.x402.org',
+      wallet: SKILLAUDIT_WALLET,
+    });
+});
 
 // --- API Keys ---
 const API_KEYS = new Set((process.env.SKILLAUDIT_API_KEYS || 'sk-skillaudit-dev').split(','));

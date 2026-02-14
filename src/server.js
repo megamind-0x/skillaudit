@@ -5,6 +5,7 @@ const http = require('http');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
+const { verifyPayment } = require('./verify-payment');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
@@ -32,18 +33,33 @@ const x402Routes = {
   },
 };
 
-// Lightweight x402 middleware — returns 402 with payment requirements
-app.use((req, res, next) => {
+// x402 middleware with DIY on-chain verification
+app.use(async (req, res, next) => {
   const routeKey = `${req.method} ${req.path}`;
   const route = x402Routes[routeKey];
   if (!route) return next();
 
-  // If client sent payment, let request through (verification TODO with CDP facilitator)
-  const paymentHeader = req.headers['payment-signature'] || req.headers['x-payment'];
-  if (paymentHeader) return next();
-
   // API key holders bypass payment
   if (API_KEYS.has(req.query?.key)) return next();
+
+  // Check for payment proof: X-Payment-TX (our DIY) or PAYMENT-SIGNATURE (x402 standard)
+  const paymentHeader = req.headers['x-payment-tx'] || req.headers['payment-signature'] || req.headers['x-payment'];
+  if (paymentHeader) {
+    try {
+      const result = await verifyPayment(paymentHeader, SKILLAUDIT_WALLET_EVM, SKILLAUDIT_WALLET_SOL, parseFloat(route.price));
+      if (result.valid) {
+        req.paymentVerified = result;
+        return next();
+      }
+      return res.status(402).json({
+        error: 'Payment verification failed',
+        reason: result.reason,
+        hint: 'Send USDC to our wallet, then retry with header X-Payment-TX: base:<txHash> or solana:<txSig>',
+      });
+    } catch (err) {
+      return res.status(500).json({ error: 'Payment verification error', message: err.message });
+    }
+  }
 
   // Return 402 with x402-compliant payment requirements (Base + Solana)
   const paymentRequired = {
@@ -81,10 +97,18 @@ app.use((req, res, next) => {
     .header('X-Payment-Required', encoded)
     .json({
       error: 'Payment Required',
-      message: `This endpoint requires $${route.price} USDC. Pay on Base or Solana via x402 protocol.`,
+      message: `This endpoint requires $${route.price} USDC. Pay on Base or Solana, then retry with the tx hash.`,
+      price: `$${route.price} USDC`,
+      howToPay: {
+        step1: `Send ${route.price} USDC to one of the wallets below`,
+        step2: 'Retry your request with header: X-Payment-TX: base:<txHash> or solana:<txSig>',
+        wallets: {
+          base: { address: SKILLAUDIT_WALLET_EVM, network: 'Base (Chain ID 8453)', asset: 'USDC' },
+          solana: { address: SKILLAUDIT_WALLET_SOL, network: 'Solana Mainnet', asset: 'USDC' },
+        },
+      },
       x402: paymentRequired,
       docs: 'https://docs.x402.org',
-      wallets: { base: SKILLAUDIT_WALLET_EVM, solana: SKILLAUDIT_WALLET_SOL },
     });
 });
 

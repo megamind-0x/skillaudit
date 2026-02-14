@@ -758,6 +758,7 @@ app.get('/openapi.json', (req, res) => {
       '/stats': { get: { summary: 'Scan statistics', responses: { '200': { description: 'Stats' } } } },
       '/badge/request': { post: { summary: 'Request trust badge', responses: { '200': { description: 'Badge result' } } } },
       '/badge/{domain}': { get: { summary: 'Check domain badge', responses: { '200': { description: 'Badge info' } } } },
+      '/capabilities/{id}': { get: { summary: 'Get capability breakdown for a scan', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Capability analysis' } } } },
       '/share/moltbook': { post: { summary: 'Share scan to Moltbook', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['scanId', 'apiKey'], properties: { scanId: { type: 'string' }, apiKey: { type: 'string' }, submolt: { type: 'string', default: 'general' } } } } } }, responses: { '200': { description: 'Post result' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }

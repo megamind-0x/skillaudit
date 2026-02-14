@@ -233,6 +233,60 @@ app.use((req, res, next) => {
 // --- Static files (SEO) ---
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d' }));
 
+// --- Quick Scan (GET) - Agent-friendly ---
+app.get('/scan/quick', scanLimiter, async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url query parameter is required', example: '/scan/quick?url=https://example.com/SKILL.md' });
+  try {
+    const content = await fetchUrl(url);
+    const result = scanContent(content, url);
+    const id = recordScan(url, result);
+    result.id = id;
+    result.shareUrl = `/scan/${id}`;
+    result.reportUrl = `/report/${id}`;
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: `Failed to fetch: ${err.message}` });
+  }
+});
+
+// --- Well-known: AI Plugin Manifest ---
+app.get('/.well-known/ai-plugin.json', (req, res) => {
+  res.json({
+    schema_version: 'v1',
+    name_for_human: 'SkillAudit',
+    name_for_model: 'skillaudit',
+    description_for_human: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
+    description_for_model: 'Scan AI agent skill files for security risks. Send a URL to /scan/quick?url=<url> (GET) for instant results, or POST to /scan/url with {"url":"..."} for full analysis. Returns risk level (clean/low/moderate/high/critical), findings, and verdict.',
+    auth: { type: 'none' },
+    api: {
+      type: 'openapi',
+      url: 'https://skillaudit.vercel.app/.well-known/openapi.json'
+    },
+    logo_url: 'https://skillaudit.vercel.app/logo.png',
+    contact_email: 'megamind@skillaudit.vercel.app',
+    legal_info_url: 'https://skillaudit.vercel.app'
+  });
+});
+
+// --- Well-known: OpenAPI spec redirect ---
+app.get('/.well-known/openapi.json', (req, res) => {
+  res.redirect(301, '/openapi.json');
+});
+
+// --- robots.txt ---
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send(`User-agent: *
+Allow: /
+Allow: /.well-known/ai-plugin.json
+Allow: /.well-known/openapi.json
+Allow: /openapi.json
+Allow: /scan/quick
+
+Sitemap: https://skillaudit.vercel.app/openapi.json
+`);
+});
+
 // --- Landing page ---
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
@@ -749,6 +803,7 @@ app.get('/openapi.json', (req, res) => {
     },
     servers: [{ url: 'https://skillaudit.vercel.app', description: 'Production' }],
     paths: {
+      '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },

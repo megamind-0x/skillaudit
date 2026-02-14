@@ -14,24 +14,26 @@ app.use(express.json({ limit: '2mb' }));
 
 // --- x402 Payment Configuration ---
 const SKILLAUDIT_WALLET = process.env.SKILLAUDIT_WALLET || '0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c';
-const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://facilitator.x402.org';
+// Base Sepolia (testnet) until CDP mainnet facilitator keys are set up
+const X402_NETWORK = process.env.X402_NETWORK || 'eip155:84532';
+const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://www.x402.org/facilitator';
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const resourceServer = new x402ResourceServer(facilitatorClient)
-  .register('eip155:8453', new ExactEvmScheme());
+  .register(X402_NETWORK, new ExactEvmScheme());
 
 const x402Routes = {
   'POST /scan/deep': {
-    accepts: { scheme: 'exact', price: '$0.05', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
-    description: 'Deep scan with full capability analysis — $0.05 USDC on Base',
+    accepts: [{ scheme: 'exact', price: '$0.05', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
+    description: 'Deep scan with full capability analysis — $0.05 USDC',
   },
   'POST /scan/batch': {
-    accepts: { scheme: 'exact', price: '$0.10', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
-    description: 'Batch scan up to 20 URLs — $0.10 USDC on Base',
+    accepts: [{ scheme: 'exact', price: '$0.10', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
+    description: 'Batch scan up to 20 URLs — $0.10 USDC',
   },
   'POST /scan/compare': {
-    accepts: { scheme: 'exact', price: '$0.05', network: 'eip155:8453', payTo: SKILLAUDIT_WALLET },
-    description: 'Compare two skill versions — $0.05 USDC on Base',
+    accepts: [{ scheme: 'exact', price: '$0.05', network: X402_NETWORK, payTo: SKILLAUDIT_WALLET }],
+    description: 'Compare two skill versions — $0.05 USDC',
   },
 };
 

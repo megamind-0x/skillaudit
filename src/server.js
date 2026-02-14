@@ -230,6 +230,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- Static files (SEO) ---
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d' }));
+
 // --- Landing page ---
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0f0f23"/>
+  <rect x="0" y="0" width="1200" height="4" fill="#00ff88"/>
+  <text x="600" y="250" font-family="monospace" font-size="72" font-weight="bold" fill="#ffffff" text-anchor="middle">🛡️ SkillAudit</text>
+  <text x="600" y="330" font-family="monospace" font-size="36" fill="#00ff88" text-anchor="middle">AI Agent Security Scanner</text>
+  <text x="600" y="400" font-family="monospace" font-size="24" fill="#888888" text-anchor="middle">Scan MCP skills for credential theft, prompt injection &amp; more</text>
+  <text x="600" y="460" font-family="monospace" font-size="20" fill="#555555" text-anchor="middle">skillaudit.vercel.app</text>
+</svg>

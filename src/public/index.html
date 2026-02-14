@@ -3,12 +3,41 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SkillAudit — Is that AI skill safe to install?</title>
-<meta name="description" content="Free security scanner for AI agent skills. Detect credential theft, data exfiltration, prompt injection before installing. Try it now — no signup needed.">
-<meta property="og:title" content="SkillAudit — Is that AI skill safe to install?">
-<meta property="og:description" content="Free security scanner for AI agent skills. Paste a URL, get a risk report in seconds.">
+<title>SkillAudit — AI Agent Security Scanner | MCP Skill Safety Auditor</title>
+<meta name="description" content="Free AI agent security scanner. Detect credential theft, data exfiltration, prompt injection in MCP skills before installing. Scan any skill URL in seconds — no signup needed.">
+<meta name="keywords" content="AI agent security, skill scanner, MCP security, agent safety, credential theft detection, prompt injection scanner, AI tool audit">
+<link rel="canonical" href="https://skillaudit.vercel.app/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="SkillAudit — AI Agent Security Scanner">
+<meta property="og:description" content="Free security scanner for AI agent skills. Detect credential theft, data exfiltration, prompt injection. Paste a URL, get a risk report in seconds.">
 <meta property="og:url" content="https://skillaudit.vercel.app">
+<meta property="og:image" content="https://skillaudit.vercel.app/og-image.svg">
+<meta property="og:site_name" content="SkillAudit">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="SkillAudit — AI Agent Security Scanner">
+<meta name="twitter:description" content="Free AI agent skill scanner. Detect credential theft, data exfiltration, prompt injection before installing.">
+<meta name="twitter:image" content="https://skillaudit.vercel.app/og-image.svg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "SkillAudit",
+  "url": "https://skillaudit.vercel.app",
+  "description": "Free AI agent security scanner that detects credential theft, data exfiltration, prompt injection, and reverse shells in MCP skills and agent tool definitions.",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Web",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Megamind_0x",
+    "url": "https://moltbook.com/u/Megamind_0x"
+  }
+}
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0f0f23;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;line-height:1.6}
@@ -137,9 +166,9 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
 <div class="container">
 
 <header>
-<h1>🛡️ Skill<span>Audit</span></h1>
+<h1>🛡️ Skill<span>Audit</span> — AI Agent Security Scanner</h1>
 <p class="hero-tagline">Is that AI skill safe to install?</p>
-<p class="hero-sub">Find out in 5 seconds. Free. No signup.</p>
+<p class="hero-sub">Scan any MCP skill or agent tool for security threats in 5 seconds. Free. No signup.</p>
 </header>
 
 <div class="scan-counter">
@@ -162,32 +191,38 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
   <div id="results"></div>
 </div>
 
+<section aria-label="How it works">
+<h2 style="color:#00ff88;font-size:1.2rem;text-align:center;margin-top:2rem">How the Skill Scanner Works</h2>
 <div class="how-it-works">
   <div class="step">
-    <div class="icon">📋</div>
-    <h3>Paste a URL</h3>
-    <p>Any SKILL.md, agent config, or tool definition</p>
+    <div class="icon" role="img" aria-label="Paste">📋</div>
+    <h3>Paste a Skill URL</h3>
+    <p>Any SKILL.md, MCP tool config, or agent definition</p>
   </div>
   <div class="step">
-    <div class="icon">⚡</div>
-    <h3>Instant Analysis</h3>
+    <div class="icon" role="img" aria-label="Analyze">⚡</div>
+    <h3>Instant Security Analysis</h3>
     <p>Pattern matching, intent detection, capability fingerprinting</p>
   </div>
   <div class="step">
-    <div class="icon">📊</div>
-    <h3>Get a Report</h3>
+    <div class="icon" role="img" aria-label="Report">📊</div>
+    <h3>Get a Safety Report</h3>
     <p>Risk score, findings, shareable link — in seconds</p>
   </div>
 </div>
+</section>
 
+<section aria-label="Threat detection">
+<h2 style="color:#00ff88;font-size:1.2rem;margin-bottom:0.5rem;border-bottom:1px solid #2a2a5a;padding-bottom:0.5rem">What We Detect — Agent Safety Threats</h2>
 <div class="detect-grid">
-  <div class="detect-item"><span class="emoji">🔑</span><span class="title">Credential Theft</span><div class="desc">API keys, tokens, .env access</div></div>
-  <div class="detect-item"><span class="emoji">📡</span><span class="title">Data Exfiltration</span><div class="desc">Suspicious outbound transfers</div></div>
-  <div class="detect-item"><span class="emoji">💉</span><span class="title">Prompt Injection</span><div class="desc">Behavior override attempts</div></div>
-  <div class="detect-item"><span class="emoji">🐚</span><span class="title">Reverse Shells</span><div class="desc">Code execution & backdoors</div></div>
-  <div class="detect-item"><span class="emoji">⛓️</span><span class="title">Threat Chains</span><div class="desc">Dangerous capability combos</div></div>
-  <div class="detect-item"><span class="emoji">🧠</span><span class="title">Agent Manipulation</span><div class="desc">Memory/soul file tampering</div></div>
+  <div class="detect-item"><span class="emoji">🔑</span><span class="title">Credential Theft Detection</span><div class="desc">API keys, tokens, .env access attempts</div></div>
+  <div class="detect-item"><span class="emoji">📡</span><span class="title">Data Exfiltration</span><div class="desc">Suspicious outbound data transfers</div></div>
+  <div class="detect-item"><span class="emoji">💉</span><span class="title">Prompt Injection</span><div class="desc">Behavior override & jailbreak attempts</div></div>
+  <div class="detect-item"><span class="emoji">🐚</span><span class="title">Reverse Shells</span><div class="desc">Code execution & backdoor detection</div></div>
+  <div class="detect-item"><span class="emoji">⛓️</span><span class="title">MCP Threat Chains</span><div class="desc">Dangerous capability combinations</div></div>
+  <div class="detect-item"><span class="emoji">🧠</span><span class="title">Agent Manipulation</span><div class="desc">Memory/soul file tampering attacks</div></div>
 </div>
+</section>
 
 <div class="recent-scans" id="recent-section" style="display:none">
   <h2>📋 Recent Scans</h2>

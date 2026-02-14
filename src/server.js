@@ -240,8 +240,9 @@ app.get('/', (req, res) => {
       endpoints: {
         'POST /scan/url': 'Scan a skill by URL (supports callback)',
         'POST /scan/content': 'Scan raw skill content',
-        'POST /scan/batch': 'Batch scan multiple URLs',
-        'POST /scan/compare': 'Compare two skill versions',
+        'POST /scan/deep': 'Deep scan with capability analysis (x402: $0.05 USDC)',
+        'POST /scan/batch': 'Batch scan multiple URLs (x402: $0.10 USDC)',
+        'POST /scan/compare': 'Compare two skill versions (x402: $0.05 USDC)',
         'GET /scan/:id': 'Get shared scan result (JSON)',
         'GET /report/:id': 'View scan report (HTML)',
         'GET /rules': 'List detection rules',
@@ -747,8 +748,9 @@ app.get('/openapi.json', (req, res) => {
     paths: {
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
-      '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
-      '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
+      '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
+      '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
+      '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },
       '/rules': { get: { summary: 'List detection rules', responses: { '200': { description: 'Rule list' } } } },

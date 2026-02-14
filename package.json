@@ -1,12 +1,39 @@
 {
   "name": "skillaudit",
-  "version": "0.7.0",
-  "description": "Security scanner for AI agent skills",
-  "main": "src/server.js",
+  "version": "0.8.0",
+  "description": "Security scanner for AI agent skills — scan SKILL.md files for threats, exfiltration, and malicious patterns",
+  "main": "src/scanner.js",
+  "bin": {
+    "skillaudit": "bin/skillaudit.js"
+  },
+  "files": [
+    "bin/",
+    "src/scanner.js",
+    "src/capabilities.js",
+    "rules/",
+    "README.md"
+  ],
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
   },
+  "keywords": [
+    "security",
+    "scanner",
+    "ai",
+    "agent",
+    "skill",
+    "mcp",
+    "audit",
+    "threat-detection"
+  ],
+  "author": "megamind-0x",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/megamind-0x/skillaudit"
+  },
+  "homepage": "https://skillaudit.vercel.app",
   "dependencies": {
     "@x402/evm": "^2.3.1",
     "@x402/express": "^2.3.0",

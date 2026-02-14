@@ -1,6 +1,6 @@
 # 🛡️ SkillAudit
 
-[![Version](https://img.shields.io/badge/version-0.4.0-00ff88?style=flat-square)](https://skillaudit.vercel.app)
+[![Version](https://img.shields.io/badge/version-0.6.1-00ff88?style=flat-square)](https://skillaudit.vercel.app)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Deploy](https://img.shields.io/badge/deploy-Vercel-black?style=flat-square&logo=vercel)](https://skillaudit.vercel.app)
 

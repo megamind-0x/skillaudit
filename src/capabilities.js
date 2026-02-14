@@ -52,12 +52,13 @@ const CAPABILITY_PATTERNS = {
   
   code_exec: {
     patterns: [
-      /\beval\s*\(/i, /\bFunction\s*\(/i,
+      /\beval\s*\(/i, /\bnew\s+Function\s*\(/i,
       /\bexec\s*\(/i, /\bspawn\s*\(/i, /\bfork\s*\(/i,
-      /\bchild_process\./i, /\bexecSync\s*\(/i,
-      /\$\(/i, /`[^`]*\$\{/i, /\bshell\s*\=/i,
+      /\bchild_process\b/i, /\bexecSync\s*\(/i,
+      /\bshell\s*[:=]\s*true/i,
       /Execute\s+code/i, /Run\s+command/i, /Dynamic\s+execution/i,
-      /subprocess/i, /\bsystem\s*\(/i,
+      /\bsubprocess\.(call|run|Popen)\s*\(/i, /\bsystem\s*\(/i,
+      /\bos\.popen\s*\(/i,
     ],
     description: "Can execute code dynamically"
   },

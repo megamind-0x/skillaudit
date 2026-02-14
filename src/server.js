@@ -57,7 +57,7 @@ function recordScan(url, result) {
     timestamp: new Date().toISOString(), 
     riskLevel: result.riskLevel, 
     riskScore: result.riskScore,
-    // v0.6.0: Include capability data for stats
+    // v0.6.1: Include capability data for stats
     capabilityStats: result.capabilityStats,
     capabilities: result.capabilities,
     threatChains: result.threatChains 
@@ -131,7 +131,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
     return res.json({
-      name: 'SkillAudit', version: '0.6.0',
+      name: 'SkillAudit', version: '0.6.1',
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
@@ -156,7 +156,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '0.6.0', uptime: process.uptime() });
+  res.json({ status: 'ok', version: '0.6.1', uptime: process.uptime() });
 });
 
 // --- Rules ---
@@ -263,7 +263,7 @@ app.post('/scan/compare', scanLimiter, async (req, res) => {
   }
 });
 
-// --- Enhanced Deep Scan (v0.6.0) ---
+// --- Enhanced Deep Scan (v0.6.1) ---
 app.post('/scan/deep', scanLimiter, async (req, res) => {
   const { url, content } = req.body;
   
@@ -303,7 +303,7 @@ app.post('/scan/deep', scanLimiter, async (req, res) => {
   }
 });
 
-// --- Capability Breakdown (v0.6.0) ---
+// --- Capability Breakdown (v0.6.1) ---
 app.get('/capabilities/:id', (req, res) => {
   const result = sharedScans.get(req.params.id);
   if (!result) return res.status(404).json({ error: 'Scan not found' });
@@ -352,7 +352,7 @@ app.get('/stats', (req, res) => {
     const d = getDomain(s.url);
     if (d) domains[d] = true;
     
-    // Collect capability stats (v0.6.0)
+    // Collect capability stats (v0.6.1)
     if (s.capabilityStats) {
       // Count threat chains
       if (s.threatChains) {
@@ -636,7 +636,7 @@ app.get('/openapi.json', (req, res) => {
   res.json({
     openapi: '3.0.3',
     info: {
-      title: 'SkillAudit API', version: '0.6.0',
+      title: 'SkillAudit API', version: '0.6.1',
       description: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
       contact: { name: 'Megamind_0x', url: 'https://moltbook.com/u/Megamind_0x' },
     },
@@ -789,5 +789,5 @@ function reportNotFound() {
 
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
-  console.log(`🛡️  SkillAudit v0.6.0 running on port ${PORT}`);
+  console.log(`🛡️  SkillAudit v0.6.1 running on port ${PORT}`);
 });

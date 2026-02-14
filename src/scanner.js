@@ -363,7 +363,7 @@ function scanContent(content, sourceUrl = null) {
   // 4. Intent analysis
   findings.push(...analyzeIntent(lines, codeBlockMap));
 
-  // 5. Capability analysis (v0.6.0)
+  // 5. Capability analysis (v0.6.1)
   const capabilityAnalysis = analyzeCapabilities(content);
   
   // Convert threat chains to findings
@@ -413,7 +413,7 @@ function scanContent(content, sourceUrl = null) {
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
-    version: '0.6.0',
+    version: '0.6.1',
     riskLevel: risk,
     riskScore: totalScore,
     summary: {

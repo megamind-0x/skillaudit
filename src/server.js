@@ -9,27 +9,30 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 // --- x402 Payment Configuration ---
-const SKILLAUDIT_WALLET = process.env.SKILLAUDIT_WALLET || '0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c';
-const X402_NETWORK = process.env.X402_NETWORK || 'eip155:8453'; // Base mainnet
+const SKILLAUDIT_WALLET_EVM = process.env.SKILLAUDIT_WALLET || '0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c';
+const SKILLAUDIT_WALLET_SOL = process.env.SKILLAUDIT_WALLET_SOL || '6oUWGzar1WQkz7nTHjuZ2oeB2gJfruvnkwREFESeCEHD';
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || 'https://www.x402.org/facilitator';
+
+// USDC contract addresses
+const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const USDC_SOL = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC on Solana
 
 const x402Routes = {
   'POST /scan/deep': {
-    price: '$0.05',
+    price: '0.05',
     description: 'Deep scan with full capability analysis',
   },
   'POST /scan/batch': {
-    price: '$0.10',
+    price: '0.10',
     description: 'Batch scan up to 20 URLs',
   },
   'POST /scan/compare': {
-    price: '$0.05',
+    price: '0.05',
     description: 'Compare two skill versions',
   },
 };
 
 // Lightweight x402 middleware — returns 402 with payment requirements
-// When a client sends PAYMENT-SIGNATURE header, we verify via facilitator
 app.use((req, res, next) => {
   const routeKey = `${req.method} ${req.path}`;
   const route = x402Routes[routeKey];
@@ -42,20 +45,33 @@ app.use((req, res, next) => {
   // API key holders bypass payment
   if (API_KEYS.has(req.query?.key)) return next();
 
-  // Return 402 with x402-compliant payment requirements
+  // Return 402 with x402-compliant payment requirements (Base + Solana)
   const paymentRequired = {
     x402Version: 2,
-    accepts: [{
-      scheme: 'exact',
-      network: X402_NETWORK,
-      maxAmountRequired: route.price.replace('$', ''),
-      resource: routeKey,
-      description: route.description,
-      mimeType: 'application/json',
-      payTo: SKILLAUDIT_WALLET,
-      maxTimeoutSeconds: 60,
-      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
-    }],
+    accepts: [
+      {
+        scheme: 'exact',
+        network: 'eip155:8453', // Base mainnet
+        maxAmountRequired: route.price,
+        resource: routeKey,
+        description: route.description,
+        mimeType: 'application/json',
+        payTo: SKILLAUDIT_WALLET_EVM,
+        maxTimeoutSeconds: 60,
+        asset: USDC_BASE,
+      },
+      {
+        scheme: 'exact',
+        network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', // Solana mainnet
+        maxAmountRequired: route.price,
+        resource: routeKey,
+        description: route.description,
+        mimeType: 'application/json',
+        payTo: SKILLAUDIT_WALLET_SOL,
+        maxTimeoutSeconds: 60,
+        asset: USDC_SOL,
+      },
+    ],
     facilitatorUrl: FACILITATOR_URL,
   };
 
@@ -65,10 +81,10 @@ app.use((req, res, next) => {
     .header('X-Payment-Required', encoded)
     .json({
       error: 'Payment Required',
-      message: `This endpoint requires ${route.price} USDC on Base. Send payment via x402 protocol.`,
+      message: `This endpoint requires $${route.price} USDC. Pay on Base or Solana via x402 protocol.`,
       x402: paymentRequired,
       docs: 'https://docs.x402.org',
-      wallet: SKILLAUDIT_WALLET,
+      wallets: { base: SKILLAUDIT_WALLET_EVM, solana: SKILLAUDIT_WALLET_SOL },
     });
 });
 

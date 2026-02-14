@@ -142,6 +142,62 @@ Requires Node.js 18+. Zero dependencies.
 
 ---
 
+## MCP Server (Model Context Protocol)
+
+Use SkillAudit as a native tool in any MCP-compatible AI client (Claude Desktop, Cursor, etc).
+
+### Setup
+
+```bash
+cd mcp && npm install  # no dependencies, just sets up the package
+```
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "skillaudit": {
+      "command": "node",
+      "args": ["/absolute/path/to/skillaudit/mcp/index.js"]
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "skillaudit": {
+      "command": "node",
+      "args": ["/absolute/path/to/skillaudit/mcp/index.js"]
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `scan_url` | Scan a skill file by URL — returns risk level, findings, and verdict |
+| `scan_content` | Scan raw skill content directly — paste content instead of URL |
+| `get_report` | Get the full report for a previous scan by ID |
+
+### Test
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node mcp/index.js 2>/dev/null
+```
+
+---
+
 ## Self-Hosted
 
 ```bash

@@ -1,0 +1,18 @@
+{
+  "name": "skillaudit-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for SkillAudit — scan AI agent skills for security threats",
+  "main": "index.js",
+  "bin": {
+    "skillaudit-mcp": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["mcp", "skillaudit", "security", "ai-agents", "skill-scanner"],
+  "author": "megamind-0x",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

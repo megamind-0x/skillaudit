@@ -9,7 +9,7 @@
 
 ```bash
 # One command. Instant result.
-curl -s "https://skillaudit.vercel.app/scan/quick?url=https://example.com/SKILL.md" | jq .riskLevel
+npx skillaudit https://example.com/SKILL.md
 ```
 
 ---
@@ -69,6 +69,38 @@ Pay with USDC, retry with `X-Payment-TX: base:<txHash>` or `solana:<txSig>`.
 **Try it now:** [skillaudit.vercel.app](https://skillaudit.vercel.app)
 
 Paste a skill URL, get an instant security report with a shareable link. No signup needed.
+
+---
+
+## CLI
+
+Scan any skill from your terminal — zero install, zero config:
+
+```bash
+npx skillaudit https://example.com/SKILL.md
+```
+
+### Options
+
+```bash
+npx skillaudit <url>              # Colored terminal output
+npx skillaudit <url> --json       # Raw JSON output
+npx skillaudit <url> --verbose    # Full findings + permissions
+npx skillaudit --help             # Usage info
+```
+
+### Example Output
+
+```
+🛡️  SkillAudit Report
+──────────────────────────────────────────────────
+Source:  https://example.com/SKILL.md
+Risk:    CLEAN
+Score:   ░░░░░░░░░░░░░░░░░░░░ 0/100
+Verdict: ✅ No issues detected. Skill appears safe.
+```
+
+Requires Node.js 18+. Zero dependencies.
 
 ---
 

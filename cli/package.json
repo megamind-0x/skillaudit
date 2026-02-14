@@ -1,0 +1,20 @@
+{
+  "name": "skillaudit",
+  "version": "0.7.0",
+  "description": "Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and 15+ attack patterns.",
+  "bin": {
+    "skillaudit": "./index.js"
+  },
+  "keywords": ["security", "ai", "agent", "skills", "scanner", "audit", "cli"],
+  "author": "megamind-0x",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/megamind-0x/skillaudit"
+  },
+  "homepage": "https://skillaudit.vercel.app",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": ["index.js"]
+}

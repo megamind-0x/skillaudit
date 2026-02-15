@@ -60,7 +60,7 @@ async function getThreatTypes() {
   return obj;
 }
 
-// Store scan result (keep last 100)
+// Store scan result (keep last 100 in list + persist full result by ID)
 async function storeScanResult(result) {
   const entry = JSON.stringify({
     url: result.url || 'unknown',
@@ -73,6 +73,19 @@ async function storeScanResult(result) {
   await redis('LTRIM', 'scans:recent', 0, 99);
 }
 
+// Persist full scan result by ID (TTL: 30 days)
+async function storeScanById(id, result) {
+  const payload = JSON.stringify(result);
+  // SET with EX 2592000 = 30 days
+  return redis('SET', `scan:${id}`, payload, 'EX', 2592000);
+}
+
+async function getScanById(id) {
+  const val = await redis('GET', `scan:${id}`);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
 async function getRecentScans(count = 10) {
   const val = await redis('LRANGE', 'scans:recent', 0, count - 1);
   if (!val) return [];
@@ -83,5 +96,5 @@ module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
   incrThreatType, getThreatTypes,
-  storeScanResult, getRecentScans,
+  storeScanResult, storeScanById, getScanById, getRecentScans,
 };

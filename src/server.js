@@ -186,6 +186,7 @@ function recordScan(url, result) {
   db.incrScanCount();
   db.incrRisk(result.riskLevel || 'unknown');
   db.storeScanResult({ url, ...result });
+  db.storeScanById(id, { ...result, id, url });
   if (result.threatChains) {
     result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
@@ -496,9 +497,22 @@ app.post('/scan/deep', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Get scan result (memory → Redis fallback) ---
+async function getScanResult(id) {
+  const mem = sharedScans.get(id);
+  if (mem) return mem;
+  // Fall back to Redis for persisted results
+  const persisted = await db.getScanById(id);
+  if (persisted) {
+    // Re-populate memory cache
+    sharedScans.set(id, persisted);
+  }
+  return persisted;
+}
+
 // --- Capability Breakdown (v0.6.1) ---
-app.get('/capabilities/:id', (req, res) => {
-  const result = sharedScans.get(req.params.id);
+app.get('/capabilities/:id', async (req, res) => {
+  const result = await getScanResult(req.params.id);
   if (!result) return res.status(404).json({ error: 'Scan not found' });
   
   res.json({
@@ -514,15 +528,15 @@ app.get('/capabilities/:id', (req, res) => {
 });
 
 // --- Shared Scan Result (JSON) ---
-app.get('/scan/:id', (req, res) => {
-  const result = sharedScans.get(req.params.id);
+app.get('/scan/:id', async (req, res) => {
+  const result = await getScanResult(req.params.id);
   if (!result) return res.status(404).json({ error: 'Scan not found' });
   res.json(result);
 });
 
 // --- Report Page (HTML) ---
-app.get('/report/:id', (req, res) => {
-  const result = sharedScans.get(req.params.id);
+app.get('/report/:id', async (req, res) => {
+  const result = await getScanResult(req.params.id);
   if (!result) return res.status(404).send(reportNotFound());
   res.send(renderReport(result));
 });
@@ -774,7 +788,7 @@ app.post('/share/moltbook', scanLimiter, async (req, res) => {
   if (!scanId) return res.status(400).json({ error: 'scanId is required' });
   if (!apiKey) return res.status(400).json({ error: 'apiKey is required (your Moltbook API key)' });
 
-  const result = sharedScans.get(scanId);
+  const result = await getScanResult(scanId);
   if (!result) return res.status(404).json({ error: 'Scan not found' });
 
   const { title, content } = generateMoltbookPost(result);

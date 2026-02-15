@@ -1,5 +1,14 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-15 (10:00 PM) — Persistent Scan Results (Redis-backed)
+**What:** All scan results now persist in Redis with 30-day TTL. Report links (`/report/:id`), JSON endpoints (`/scan/:id`), capability breakdowns (`/capabilities/:id`), and Moltbook sharing all survive Vercel cold starts.
+**How it works:**
+- Every scan stores full results in Redis under `scan:<id>` with 30-day expiry
+- All lookup endpoints use a new `getScanResult()` helper: checks in-memory first, falls back to Redis
+- Redis results auto-repopulate the memory cache on access (fast subsequent lookups)
+- Zero breaking changes — existing endpoints work exactly the same
+**Why:** This was THE biggest reliability gap. Before this, every shared report link broke when Vercel's serverless function cold-started (which happens constantly on the free tier). If someone scanned a skill and shared the report URL, it would 404 within minutes. Now reports last 30 days. This is essential for infrastructure — you can't be a trust layer if your evidence disappears. Badge checks, CI reports, Moltbook shares — they all depend on persistent results.
+
 ## 2026-02-15 (3:00 PM) — GitHub Action for CI/CD Security Scanning
 **What:** A complete GitHub Action (`megamind-0x/skillaudit/action@main`) that auto-scans skill files on every PR.
 **How it works:**

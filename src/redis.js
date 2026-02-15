@@ -96,23 +96,17 @@ async function getRecentScans(count = 10) {
 async function trackDomainScan(domain, riskLevel, riskScore, findingsCount, url) {
   if (!domain) return;
   const key = `domain:${domain}`;
-  const now = Date.now();
-  // Increment scan count
+  const ts = new Date().toISOString();
+  // Increment scan count and risk level
   await redis('HINCRBY', key, 'scanCount', 1);
-  // Track risk level counts
   await redis('HINCRBY', key, `risk:${riskLevel}`, 1);
-  // Update cumulative score and last scan info
-  await redis('HSET', key, 'lastScanAt', new Date().toISOString());
-  await redis('HSET', key, 'lastRiskLevel', riskLevel);
-  await redis('HSET', key, 'lastRiskScore', String(riskScore));
-  await redis('HSET', key, 'lastUrl', url || '');
   // Accumulate total score for averaging
-  const prevTotal = parseInt(await redis('HGET', key, 'totalRiskScore') || '0');
-  await redis('HSET', key, 'totalRiskScore', String(prevTotal + riskScore));
-  // Track first seen
+  await redis('HINCRBY', key, 'totalRiskScore', riskScore);
+  // Update last scan info (all fields in one HSET call)
+  await redis('HSET', key, 'lastScanAt', ts, 'lastRiskLevel', riskLevel, 'lastRiskScore', String(riskScore), 'lastUrl', url || '');
+  // Track first seen (only if not set)
   const firstSeen = await redis('HGET', key, 'firstSeenAt');
-  if (!firstSeen) await redis('HSET', key, 'firstSeenAt', new Date().toISOString());
-  // No expiry — reputation is permanent
+  if (!firstSeen) await redis('HSET', key, 'firstSeenAt', ts);
 }
 
 async function getDomainReputation(domain) {

@@ -190,6 +190,11 @@ function recordScan(url, result) {
   if (result.threatChains) {
     result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
+  // Track domain reputation
+  const domain = getDomain(url);
+  if (domain) {
+    db.trackDomainScan(domain, result.riskLevel, result.riskScore, result.summary?.total || 0, url);
+  }
   return id;
 }
 
@@ -329,6 +334,8 @@ app.get('/', (req, res) => {
         'GET /badge/:domain.svg': 'Embeddable SVG badge for READMEs',
         'GET /badge/scan.svg?url=': 'Live scan → SVG badge in one request',
         'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
+        'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
+        'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -860,6 +867,48 @@ app.post('/share/moltbook', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Domain Reputation API ---
+app.get('/reputation/:domain', async (req, res) => {
+  const domain = req.params.domain.toLowerCase();
+  const rep = await db.getDomainReputation(domain);
+  if (!rep) {
+    return res.json({
+      domain,
+      reputation: 'unknown',
+      reputationScore: null,
+      scanCount: 0,
+      message: 'No scan history for this domain. Scan a skill from this domain first.',
+      scanUrl: `https://skillaudit.vercel.app/scan/quick?url=https://${domain}/SKILL.md`,
+    });
+  }
+  res.json(rep);
+});
+
+app.post('/reputation/bulk', async (req, res) => {
+  const { domains } = req.body;
+  if (!domains || !Array.isArray(domains) || domains.length === 0) {
+    return res.status(400).json({ error: 'domains array is required' });
+  }
+  if (domains.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 domains per request' });
+  }
+  const results = await Promise.all(
+    domains.map(async (d) => {
+      const domain = String(d).toLowerCase();
+      const rep = await db.getDomainReputation(domain);
+      return rep || { domain, reputation: 'unknown', reputationScore: null, scanCount: 0 };
+    })
+  );
+  const trusted = results.filter(r => r.reputation === 'trusted').length;
+  const suspicious = results.filter(r => r.reputation === 'suspicious' || r.reputation === 'dangerous').length;
+  const unknown = results.filter(r => r.reputation === 'unknown').length;
+  res.json({
+    total: domains.length,
+    summary: { trusted, suspicious, unknown },
+    results,
+  });
+});
+
 // --- OpenAPI 3.0 Spec ---
 app.get('/openapi.json', (req, res) => {
   res.json({
@@ -888,6 +937,8 @@ app.get('/openapi.json', (req, res) => {
       '/badge/scan.svg': { get: { summary: 'Live scan badge — scan a URL and return SVG badge', description: 'Scans the given URL and returns an SVG badge with the result. Use: ![](https://skillaudit.vercel.app/badge/scan.svg?url=https://...)', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'SVG badge image' } } } },
       '/capabilities/{id}': { get: { summary: 'Get capability breakdown for a scan', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Capability analysis' } } } },
       '/share/moltbook': { post: { summary: 'Share scan to Moltbook', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['scanId', 'apiKey'], properties: { scanId: { type: 'string' }, apiKey: { type: 'string' }, submolt: { type: 'string', default: 'general' } } } } } }, responses: { '200': { description: 'Post result' } } } },
+      '/reputation/{domain}': { get: { summary: 'Get domain reputation', description: 'Returns aggregated reputation score based on all past scans for this domain. Includes scan count, risk distribution, average risk score, and trust level (trusted/moderate/suspicious/dangerous).', parameters: [{ name: 'domain', in: 'path', required: true, schema: { type: 'string' }, description: 'Domain hostname (e.g. github.com)' }], responses: { '200': { description: 'Domain reputation data' } } } },
+      '/reputation/bulk': { post: { summary: 'Bulk domain reputation lookup (up to 50)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['domains'], properties: { domains: { type: 'array', items: { type: 'string' } } } } } } }, responses: { '200': { description: 'Bulk reputation results' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });

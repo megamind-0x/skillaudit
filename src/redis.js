@@ -92,9 +92,83 @@ async function getRecentScans(count = 10) {
   return val.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
 }
 
+// Domain reputation tracking
+async function trackDomainScan(domain, riskLevel, riskScore, findingsCount, url) {
+  if (!domain) return;
+  const key = `domain:${domain}`;
+  const now = Date.now();
+  // Increment scan count
+  await redis('HINCRBY', key, 'scanCount', 1);
+  // Track risk level counts
+  await redis('HINCRBY', key, `risk:${riskLevel}`, 1);
+  // Update cumulative score and last scan info
+  await redis('HSET', key, 'lastScanAt', new Date().toISOString());
+  await redis('HSET', key, 'lastRiskLevel', riskLevel);
+  await redis('HSET', key, 'lastRiskScore', String(riskScore));
+  await redis('HSET', key, 'lastUrl', url || '');
+  // Accumulate total score for averaging
+  const prevTotal = parseInt(await redis('HGET', key, 'totalRiskScore') || '0');
+  await redis('HSET', key, 'totalRiskScore', String(prevTotal + riskScore));
+  // Track first seen
+  const firstSeen = await redis('HGET', key, 'firstSeenAt');
+  if (!firstSeen) await redis('HSET', key, 'firstSeenAt', new Date().toISOString());
+  // No expiry — reputation is permanent
+}
+
+async function getDomainReputation(domain) {
+  if (!domain) return null;
+  const key = `domain:${domain}`;
+  const val = await redis('HGETALL', key);
+  if (!val || !Array.isArray(val) || val.length === 0) return null;
+  const obj = {};
+  for (let i = 0; i < val.length; i += 2) obj[val[i]] = val[i + 1];
+  
+  const scanCount = parseInt(obj.scanCount) || 0;
+  const totalRiskScore = parseInt(obj.totalRiskScore) || 0;
+  const avgRiskScore = scanCount > 0 ? Math.round((totalRiskScore / scanCount) * 100) / 100 : 0;
+  
+  // Build risk distribution
+  const riskDist = {};
+  for (const k of Object.keys(obj)) {
+    if (k.startsWith('risk:')) riskDist[k.slice(5)] = parseInt(obj[k]) || 0;
+  }
+  
+  // Calculate reputation: 100 = perfect, 0 = terrible
+  // Weighted: critical=-20, high=-10, moderate=-5, low=-1, clean=+2
+  const weights = { critical: -20, high: -10, moderate: -5, low: -1, clean: 2 };
+  let repScore = 100;
+  for (const [level, count] of Object.entries(riskDist)) {
+    repScore += (weights[level] || 0) * count;
+  }
+  repScore = Math.max(0, Math.min(100, repScore));
+  
+  let reputation;
+  if (repScore >= 90) reputation = 'trusted';
+  else if (repScore >= 70) reputation = 'moderate';
+  else if (repScore >= 40) reputation = 'suspicious';
+  else reputation = 'dangerous';
+
+  return {
+    domain,
+    reputation,
+    reputationScore: repScore,
+    scanCount,
+    avgRiskScore,
+    riskDistribution: riskDist,
+    lastScan: {
+      at: obj.lastScanAt || null,
+      riskLevel: obj.lastRiskLevel || null,
+      riskScore: parseInt(obj.lastRiskScore) || 0,
+      url: obj.lastUrl || null,
+    },
+    firstSeenAt: obj.firstSeenAt || null,
+  };
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
   incrThreatType, getThreatTypes,
   storeScanResult, storeScanById, getScanById, getRecentScans,
+  trackDomainScan, getDomainReputation,
 };

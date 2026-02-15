@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-15 (3:00 PM) — GitHub Action for CI/CD Security Scanning
+**What:** A complete GitHub Action (`megamind-0x/skillaudit/action@main`) that auto-scans skill files on every PR.
+**How it works:**
+- Composite action installs SkillAudit via npm, runs local scan on the repo
+- Posts detailed PR comments with findings table (severity, rule, description, line number)
+- Configurable risk threshold — fails the build if risk exceeds `fail-on` level (default: high)
+- Outputs `risk-level`, `risk-score`, `findings-count` for downstream workflow steps
+- Example workflow included at `.github/workflows/skillaudit.yml`
+**Why:** This is THE infrastructure play. If repos add SkillAudit to their CI, it runs automatically on every change — like linting or tests. SkillAudit stops being a tool you go to and becomes a gate you pass through. Every PR that touches skill files gets scanned before merge. This is how SkillAudit becomes the default security layer.
+
 ## 2026-02-15 (10:00 AM) — Hardcoded Secret Detection Engine
 **What:** 22 dedicated detectors for real API keys, tokens, and credentials embedded in skill files. New `/secrets/detectors` endpoint.
 **Detects:** OpenAI, Anthropic, GitHub, AWS, Slack, Discord, Stripe, SendGrid, Google, Telegram, Mailgun, Vercel, npm, PyPI keys/tokens, PEM private keys, and generic high-entropy secret assignments.

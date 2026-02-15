@@ -322,7 +322,9 @@ app.get('/', (req, res) => {
         'GET /history': 'Recent scan history',
         'GET /stats': 'Scan statistics',
         'POST /badge/request': 'Request a trust badge',
-        'GET /badge/:domain': 'Check domain badge',
+        'GET /badge/:domain': 'Check domain badge (JSON)',
+        'GET /badge/:domain.svg': 'Embeddable SVG badge for READMEs',
+        'GET /badge/scan.svg?url=': 'Live scan → SVG badge in one request',
         'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
@@ -582,10 +584,35 @@ app.post('/badge/request', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Live Badge: scan a URL and return SVG badge ---
+app.get('/badge/scan.svg', scanLimiter, async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.type('image/svg+xml').send(renderBadgeSvg('SkillAudit', 'error'));
+  try {
+    const content = await fetchUrl(url);
+    const result = scanContent(content, url);
+    recordScan(url, result);
+    const domain = getDomain(url);
+    if (domain) badges.set(domain, { status: result.riskLevel === 'clean' || result.riskLevel === 'low' ? 'verified-safe' : 'flagged', url, riskLevel: result.riskLevel, riskScore: result.riskScore, updatedAt: new Date().toISOString() });
+    res.type('image/svg+xml').header('Cache-Control', 'public, max-age=300').send(renderBadgeSvg('SkillAudit', result.riskLevel));
+  } catch {
+    res.type('image/svg+xml').send(renderBadgeSvg('SkillAudit', 'error'));
+  }
+});
+
 app.get('/badge/:domain', (req, res) => {
-  const info = badges.get(req.params.domain);
-  if (!info) return res.json({ domain: req.params.domain, badge: 'unaudited' });
-  res.json({ domain: req.params.domain, ...info });
+  // If requesting .svg, return SVG badge image
+  const domain = req.params.domain;
+  if (domain.endsWith('.svg')) {
+    const actualDomain = domain.slice(0, -4);
+    const info = badges.get(actualDomain);
+    const status = info ? info.riskLevel : 'unaudited';
+    res.type('image/svg+xml').header('Cache-Control', 'public, max-age=300').send(renderBadgeSvg('SkillAudit', status));
+    return;
+  }
+  const info = badges.get(domain);
+  if (!info) return res.json({ domain, badge: 'unaudited' });
+  res.json({ domain, ...info });
 });
 
 // --- Moltbook Integration ---
@@ -828,13 +855,51 @@ app.get('/openapi.json', (req, res) => {
       '/history': { get: { summary: 'Recent scan history', responses: { '200': { description: 'History' } } } },
       '/stats': { get: { summary: 'Scan statistics', responses: { '200': { description: 'Stats' } } } },
       '/badge/request': { post: { summary: 'Request trust badge', responses: { '200': { description: 'Badge result' } } } },
-      '/badge/{domain}': { get: { summary: 'Check domain badge', responses: { '200': { description: 'Badge info' } } } },
+      '/badge/{domain}': { get: { summary: 'Check domain badge (JSON)', responses: { '200': { description: 'Badge info' } } } },
+      '/badge/{domain}.svg': { get: { summary: 'Get SVG badge image for a domain', description: 'Returns an embeddable SVG badge showing the domain\'s scan status. Use in README files: ![SkillAudit](https://skillaudit.vercel.app/badge/example.com.svg)', responses: { '200': { description: 'SVG badge image', content: { 'image/svg+xml': {} } } } } },
+      '/badge/scan.svg': { get: { summary: 'Live scan badge — scan a URL and return SVG badge', description: 'Scans the given URL and returns an SVG badge with the result. Use: ![](https://skillaudit.vercel.app/badge/scan.svg?url=https://...)', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'SVG badge image' } } } },
       '/capabilities/{id}': { get: { summary: 'Get capability breakdown for a scan', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Capability analysis' } } } },
       '/share/moltbook': { post: { summary: 'Share scan to Moltbook', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['scanId', 'apiKey'], properties: { scanId: { type: 'string' }, apiKey: { type: 'string' }, submolt: { type: 'string', default: 'general' } } } } } }, responses: { '200': { description: 'Post result' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });
 });
+
+// --- SVG Badge Renderer ---
+function renderBadgeSvg(label, status) {
+  const colors = {
+    clean: '#4c1', low: '#97CA00', moderate: '#dfb317', high: '#fe7d37',
+    critical: '#e05d44', unaudited: '#9f9f9f', error: '#e05d44',
+    'verified-safe': '#4c1', flagged: '#fe7d37',
+  };
+  const labels = {
+    clean: 'clean', low: 'low risk', moderate: 'moderate', high: 'high risk',
+    critical: 'critical', unaudited: 'unaudited', error: 'error',
+    'verified-safe': 'safe', flagged: 'flagged',
+  };
+  const color = colors[status] || '#9f9f9f';
+  const text = labels[status] || status;
+  const labelWidth = label.length * 6.5 + 10;
+  const valueWidth = text.length * 6.5 + 10;
+  const totalWidth = labelWidth + valueWidth;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${label}: ${text}">
+  <title>${label}: ${text}</title>
+  <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+  <clipPath id="r"><rect width="${totalWidth}" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="${labelWidth}" height="20" fill="#555"/>
+    <rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${color}"/>
+    <rect width="${totalWidth}" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="11">
+    <text aria-hidden="true" x="${labelWidth / 2}" y="15" fill="#010101" fill-opacity=".3">${label}</text>
+    <text x="${labelWidth / 2}" y="14">${label}</text>
+    <text aria-hidden="true" x="${labelWidth + valueWidth / 2}" y="15" fill="#010101" fill-opacity=".3">${text}</text>
+    <text x="${labelWidth + valueWidth / 2}" y="14">${text}</text>
+  </g>
+</svg>`;
+}
 
 // --- Report HTML renderer ---
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

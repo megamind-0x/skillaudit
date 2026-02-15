@@ -5,6 +5,7 @@ const http = require('http');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
+const { SECRET_DETECTORS } = require('./secrets');
 const { verifyPayment } = require('./verify-payment');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -319,6 +320,7 @@ app.get('/', (req, res) => {
         'GET /scan/:id': 'Get shared scan result (JSON)',
         'GET /report/:id': 'View scan report (HTML)',
         'GET /rules': 'List detection rules',
+        'GET /secrets/detectors': 'List hardcoded secret detectors (22 patterns)',
         'GET /history': 'Recent scan history',
         'GET /stats': 'Scan statistics',
         'POST /badge/request': 'Request a trust badge',
@@ -346,6 +348,18 @@ app.get('/rules', (req, res) => {
     rules: rules.map(r => ({
       id: r.id, severity: r.severity, category: r.category,
       name: r.name, description: r.description, patternCount: r.patterns.length
+    }))
+  });
+});
+
+// --- Secret Detectors ---
+app.get('/secrets/detectors', (req, res) => {
+  res.json({
+    count: SECRET_DETECTORS.length,
+    description: 'Hardcoded secret detection — catches real API keys, tokens, and credentials embedded in skill files',
+    detectors: SECRET_DETECTORS.map(d => ({
+      id: d.id, severity: d.severity, category: d.category,
+      name: d.name, description: d.description,
     }))
   });
 });

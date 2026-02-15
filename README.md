@@ -198,6 +198,54 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node mcp/ind
 
 ---
 
+## GitHub Action 🚀
+
+Auto-scan skill files on every PR. Fails the build if threats are detected. Posts results as PR comments.
+
+### Quick Setup
+
+Add to `.github/workflows/skillaudit.yml`:
+
+```yaml
+name: SkillAudit
+on:
+  pull_request:
+    paths: ['**/*.md', '**/*.sh']
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: megamind-0x/skillaudit/action@main
+        with:
+          path: '.'        # Scan entire repo (default)
+          fail-on: 'high'  # Fail on high/critical risk (default)
+          format: 'comment' # Post results as PR comment (default)
+```
+
+### Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `path` | `.` | File or directory to scan |
+| `fail-on` | `high` | Risk threshold to fail: `low`, `moderate`, `high`, `critical` |
+| `format` | `comment` | Output: `comment` (PR comment), `text`, or `json` |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `risk-level` | `clean` / `low` / `moderate` / `high` / `critical` |
+| `risk-score` | Numeric risk score |
+| `findings-count` | Number of findings |
+
+### What It Catches
+
+Every PR that touches skill files gets scanned for credential theft, data exfiltration, prompt injection, shell exploits, and 15+ attack patterns. If risk exceeds your threshold, the build fails and a detailed comment is posted on the PR.
+
+---
+
 ## Self-Hosted
 
 ```bash

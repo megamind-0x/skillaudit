@@ -1,0 +1,206 @@
+name: 'SkillAudit Security Scan'
+description: 'Scan AI agent skill files for security threats — credential theft, data exfiltration, prompt injection, and more.'
+author: 'megamind-0x'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  path:
+    description: 'Path to skill file or directory to scan (default: repo root)'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Risk level that fails the check: low, moderate, high, critical (default: high)'
+    required: false
+    default: 'high'
+  format:
+    description: 'Output format: text, json, or comment (posts PR comment)'
+    required: false
+    default: 'comment'
+  api-mode:
+    description: 'Use hosted API instead of local scan (true/false)'
+    required: false
+    default: 'false'
+  files:
+    description: 'Glob pattern for files to scan (default: auto-detect skill files)'
+    required: false
+    default: ''
+
+outputs:
+  risk-level:
+    description: 'Overall risk level (clean/low/moderate/high/critical)'
+  risk-score:
+    description: 'Numeric risk score'
+  findings-count:
+    description: 'Number of security findings'
+  result-json:
+    description: 'Full scan result as JSON'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install SkillAudit
+      shell: bash
+      run: npm install -g skillaudit@latest
+
+    - name: Run SkillAudit Scan
+      id: scan
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_API_MODE: ${{ inputs.api-mode }}
+        INPUT_FILES: ${{ inputs.files }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set +e
+
+        SCAN_TARGET="${INPUT_PATH}"
+        SCAN_ARGS="--json --no-color"
+
+        # Run the scan
+        RESULT=$(skillaudit ${SCAN_TARGET} ${SCAN_ARGS} 2>&1)
+        EXIT_CODE=$?
+
+        # If scan errored out (exit code 2), try to provide useful output
+        if [ $EXIT_CODE -eq 2 ]; then
+          echo "::error::SkillAudit scan failed: ${RESULT}"
+          echo "risk-level=error" >> $GITHUB_OUTPUT
+          echo "risk-score=-1" >> $GITHUB_OUTPUT
+          echo "findings-count=0" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        # Parse result
+        RISK_LEVEL=$(echo "$RESULT" | node -e "
+          const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+          console.log(d.riskLevel || 'unknown');
+        " 2>/dev/null || echo "unknown")
+
+        RISK_SCORE=$(echo "$RESULT" | node -e "
+          const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+          console.log(d.riskScore ?? 0);
+        " 2>/dev/null || echo "0")
+
+        FINDINGS_COUNT=$(echo "$RESULT" | node -e "
+          const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+          console.log(d.summary?.total ?? d.findings?.length ?? 0);
+        " 2>/dev/null || echo "0")
+
+        echo "risk-level=${RISK_LEVEL}" >> $GITHUB_OUTPUT
+        echo "risk-score=${RISK_SCORE}" >> $GITHUB_OUTPUT
+        echo "findings-count=${FINDINGS_COUNT}" >> $GITHUB_OUTPUT
+
+        # Save full JSON for the comment step
+        echo "$RESULT" > /tmp/skillaudit-result.json
+        # Escape for output
+        ESCAPED=$(echo "$RESULT" | head -c 50000 | jq -Rsa .)
+        echo "result-json=${ESCAPED}" >> $GITHUB_OUTPUT
+
+        # Determine if we should fail
+        FAIL_LEVELS=""
+        case "${INPUT_FAIL_ON}" in
+          low)      FAIL_LEVELS="low moderate high critical" ;;
+          moderate) FAIL_LEVELS="moderate high critical" ;;
+          high)     FAIL_LEVELS="high critical" ;;
+          critical) FAIL_LEVELS="critical" ;;
+          *)        FAIL_LEVELS="high critical" ;;
+        esac
+
+        SHOULD_FAIL=false
+        for level in $FAIL_LEVELS; do
+          if [ "$RISK_LEVEL" = "$level" ]; then
+            SHOULD_FAIL=true
+            break
+          fi
+        done
+
+        # Print summary to action log
+        echo ""
+        echo "╔═══════════════════════════════════════╗"
+        echo "║   SkillAudit Scan Results             ║"
+        echo "╚═══════════════════════════════════════╝"
+        echo "  Risk Level:  ${RISK_LEVEL}"
+        echo "  Risk Score:  ${RISK_SCORE}"
+        echo "  Findings:    ${FINDINGS_COUNT}"
+        echo ""
+
+        if [ "$SHOULD_FAIL" = "true" ]; then
+          echo "::error::SkillAudit: ${RISK_LEVEL} risk detected (threshold: ${INPUT_FAIL_ON}). ${FINDINGS_COUNT} finding(s)."
+          echo "should-fail=true" >> $GITHUB_OUTPUT
+        else
+          echo "should-fail=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Post PR Comment
+      if: inputs.format == 'comment' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        RISK_LEVEL: ${{ steps.scan.outputs.risk-level }}
+        RISK_SCORE: ${{ steps.scan.outputs.risk-score }}
+        FINDINGS_COUNT: ${{ steps.scan.outputs.findings-count }}
+      run: |
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        REPO=${{ github.repository }}
+
+        # Risk emoji
+        case "${RISK_LEVEL}" in
+          clean)    EMOJI="✅"; COLOR="green" ;;
+          low)      EMOJI="🟢"; COLOR="cyan" ;;
+          moderate) EMOJI="🟡"; COLOR="yellow" ;;
+          high)     EMOJI="🔴"; COLOR="red" ;;
+          critical) EMOJI="💀"; COLOR="red" ;;
+          *)        EMOJI="❓"; COLOR="gray" ;;
+        esac
+
+        # Build findings table from JSON
+        FINDINGS_TABLE=""
+        if [ -f /tmp/skillaudit-result.json ]; then
+          FINDINGS_TABLE=$(node -e "
+            const r = JSON.parse(require('fs').readFileSync('/tmp/skillaudit-result.json','utf8'));
+            const f = r.findings || [];
+            if (f.length === 0) { console.log('No security issues found.'); process.exit(0); }
+            console.log('| Severity | Rule | Description | Line |');
+            console.log('|----------|------|-------------|------|');
+            f.slice(0, 15).forEach(x => {
+              const sev = (x.severity||'?').toUpperCase();
+              const icon = {CRITICAL:'💀',HIGH:'🔴',MEDIUM:'🟡',LOW:'🟢'}[sev]||'•';
+              console.log('| ' + icon + ' ' + sev + ' | \`' + (x.ruleId||x.rule||'?') + '\` | ' + (x.name||x.description||'').substring(0,60) + ' | ' + (x.line||'?') + ' |');
+            });
+            if (f.length > 15) console.log('| | | ... and ' + (f.length-15) + ' more | |');
+          " 2>/dev/null || echo "Could not parse findings.")
+        fi
+
+        BODY="## ${EMOJI} SkillAudit Security Scan
+
+        **Risk Level:** \`${RISK_LEVEL^^}\` (score: ${RISK_SCORE})
+        **Findings:** ${FINDINGS_COUNT} issue(s)
+
+        ${FINDINGS_TABLE}
+
+        ---
+        <sub>🛡️ Scanned by [SkillAudit](https://skillaudit.vercel.app) — Security scanner for AI agent skills</sub>"
+
+        # Post comment via GitHub API
+        BODY_JSON=$(echo "$BODY" | jq -Rsa '{body: .}')
+        curl -s -X POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Content-Type: application/json" \
+          "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          -d "$BODY_JSON" > /dev/null
+
+    - name: Fail if threshold exceeded
+      if: steps.scan.outputs.should-fail == 'true'
+      shell: bash
+      run: |
+        echo "SkillAudit: Risk level ${{ steps.scan.outputs.risk-level }} exceeds threshold. Failing build."
+        exit 1

@@ -1,0 +1,39 @@
+# Example: Add this to your repo's .github/workflows/ to auto-scan skill files on PRs
+name: SkillAudit Security Scan
+
+on:
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '**/SKILL.md'
+      - '**/AGENTS.md'
+      - '**/setup.sh'
+      - '**/install.sh'
+      - '**/*.sh'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '**/SKILL.md'
+
+jobs:
+  skillaudit:
+    runs-on: ubuntu-latest
+    name: Scan for security threats
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run SkillAudit
+        uses: megamind-0x/skillaudit/action@main
+        id: audit
+        with:
+          path: '.'
+          fail-on: 'high'
+          format: 'comment'
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Risk: ${{ steps.audit.outputs.risk-level }}"
+          echo "Score: ${{ steps.audit.outputs.risk-score }}"
+          echo "Findings: ${{ steps.audit.outputs.findings-count }}"

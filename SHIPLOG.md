@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-16 (1:00 AM) — Domain Reputation API
+**What:** Two new endpoints that turn SkillAudit into a persistent reputation database for skill domains.
+**Endpoints:**
+- `GET /reputation/:domain` — Returns aggregated reputation for any domain: trust level (trusted/moderate/suspicious/dangerous), reputation score (0-100), total scan count, risk distribution across all scans, average risk score, first/last scan dates
+- `POST /reputation/bulk` — Check up to 50 domains in one request with summary stats
+**How it works:**
+- Every scan now tracks domain-level stats in Redis (scan count, risk level counts, cumulative score)
+- Reputation score is weighted: clean scans build trust (+2), critical scans damage it (-20) — like a credit score
+- Domain data is permanent (no TTL) — reputation builds over time
+- Unknown domains return `reputation: "unknown"` with a link to scan them
+**Why:** This is the "reputation database" play. Before this, SkillAudit was a one-shot scanner — you scan, you get a result, done. Now it accumulates knowledge. Agents can ask "is this domain trustworthy?" without even scanning — just check the reputation. This is how antivirus databases work: the more scans happen, the smarter the system gets. SkillAudit stops being a tool and starts being a knowledge base.
+
 ## 2026-02-15 (10:00 PM) — Persistent Scan Results (Redis-backed)
 **What:** All scan results now persist in Redis with 30-day TTL. Report links (`/report/:id`), JSON endpoints (`/scan/:id`), capability breakdowns (`/capabilities/:id`), and Moltbook sharing all survive Vercel cold starts.
 **How it works:**

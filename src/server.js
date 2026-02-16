@@ -280,6 +280,59 @@ app.use((req, res, next) => {
 // --- Static files (SEO) ---
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d' }));
 
+// --- Pre-Install Gate (GET) - The infrastructure endpoint ---
+// Designed for agents: one call, one answer. "Should I install this?"
+app.get('/gate', scanLimiter, async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ allow: false, decision: 'error', reason: 'url query parameter is required', example: '/gate?url=https://example.com/SKILL.md' });
+
+  const threshold = req.query.threshold || 'moderate'; // allow everything below this risk level
+  const thresholdOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
+  const thresholdIdx = thresholdOrder[threshold] ?? 2;
+
+  try {
+    const content = await fetchUrl(url);
+    const result = scanContent(content, url);
+    const id = recordScan(url, result);
+
+    const riskIdx = thresholdOrder[result.riskLevel] ?? 0;
+    const decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
+    const allow = decision !== 'deny';
+
+    // Get domain reputation if available
+    const domain = getDomain(url);
+    let reputation = null;
+    if (domain) {
+      try { reputation = await db.getDomainReputation(domain); } catch {}
+    }
+
+    res.json({
+      allow,
+      decision, // 'allow' | 'warn' | 'deny'
+      risk: result.riskLevel,
+      score: result.riskScore,
+      findings: result.summary.total,
+      critical: result.summary.critical,
+      high: result.summary.high,
+      verdict: result.verdict,
+      domain: domain || null,
+      domainReputation: reputation ? reputation.reputation : 'unknown',
+      domainScore: reputation ? reputation.reputationScore : null,
+      scanId: id,
+      reportUrl: `https://skillaudit.vercel.app/report/${id}`,
+      threshold,
+      // Top 3 findings for context (severity + name only)
+      topFindings: result.findings.slice(0, 3).map(f => ({
+        severity: f.severity,
+        name: f.name,
+        rule: f.ruleId,
+      })),
+    });
+  } catch (err) {
+    res.status(400).json({ allow: false, decision: 'error', reason: `Failed to fetch: ${err.message}` });
+  }
+});
+
 // --- Quick Scan (GET) - Agent-friendly ---
 app.get('/scan/quick', scanLimiter, async (req, res) => {
   const url = req.query.url;
@@ -304,7 +357,7 @@ app.get('/.well-known/ai-plugin.json', (req, res) => {
     name_for_human: 'SkillAudit',
     name_for_model: 'skillaudit',
     description_for_human: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
-    description_for_model: 'Scan AI agent skill files for security risks. Send a URL to /scan/quick?url=<url> (GET) for instant results, or POST to /scan/url with {"url":"..."} for full analysis. Returns risk level (clean/low/moderate/high/critical), findings, and verdict.',
+    description_for_model: 'Security gate for AI agent skills. Before installing any skill, call GET /gate?url=<url> for an instant allow/warn/deny decision. For full scan details, use GET /scan/quick?url=<url> or POST /scan/url with {"url":"..."}. Returns risk level (clean/low/moderate/high/critical), findings, and verdict.',
     auth: { type: 'none' },
     api: {
       type: 'openapi',
@@ -342,6 +395,7 @@ app.get('/', (req, res) => {
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
+        'GET /gate?url=': 'Pre-install gate — instant allow/warn/deny decision for agents (the infrastructure endpoint)',
         'POST /scan/url': 'Scan a skill by URL (supports callback)',
         'POST /scan/content': 'Scan raw skill content',
         'POST /scan/deep': 'Deep scan with capability analysis (x402: $0.05 USDC)',
@@ -366,6 +420,11 @@ app.get('/', (req, res) => {
         'GET /feed/since?ts=': 'Incremental threat updates since a timestamp',
         'GET /feed/domains': 'Recently flagged domains',
         'GET /feed/rules': 'Trending detection rules (all-time + today)',
+        'POST /watchlist': 'Add URL to watchlist for continuous monitoring (API key required)',
+        'GET /watchlist': 'List watched URLs with risk status (API key required)',
+        'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
+        'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
+        'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -1187,6 +1246,210 @@ app.get('/feed/rules', async (req, res) => {
   });
 });
 
+// --- Watchlist / Monitoring API ---
+
+// Add a URL to watchlist
+app.post('/watchlist', scanLimiter, async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.', hint: 'Contact @Megamind_0x for an API key.' });
+  }
+  const { url, label, webhook } = req.body;
+  if (!url) return res.status(400).json({ error: 'url is required' });
+
+  // Check limit (max 50 per key)
+  const existing = await db.getWatchlist(apiKey);
+  if (existing.length >= 50) {
+    return res.status(400).json({ error: 'Watchlist limit reached (50 URLs). Remove some first.' });
+  }
+  // Prevent duplicates
+  if (existing.find(i => i.url === url)) {
+    return res.status(409).json({ error: 'URL already on watchlist', existing: existing.find(i => i.url === url) });
+  }
+
+  // Do initial scan
+  let initialResult = null;
+  try {
+    const content = await fetchUrl(url);
+    initialResult = scanContent(content, url);
+    const scanId = recordScan(url, initialResult);
+    initialResult.id = scanId;
+  } catch (err) {
+    return res.status(400).json({ error: `Failed to fetch URL: ${err.message}` });
+  }
+
+  const id = crypto.randomBytes(6).toString('hex');
+  const item = {
+    id,
+    url,
+    label: label || getDomain(url) || url,
+    webhook: webhook || null,
+    addedAt: new Date().toISOString(),
+    lastRisk: initialResult.riskLevel,
+    lastScore: initialResult.riskScore,
+    lastScanId: initialResult.id,
+    lastScanAt: new Date().toISOString(),
+    scanCount: 1,
+    alerts: [],
+  };
+
+  await db.addWatchlistItem(apiKey, item);
+
+  res.json({
+    success: true,
+    message: 'URL added to watchlist and initial scan complete.',
+    item,
+    initialScan: {
+      riskLevel: initialResult.riskLevel,
+      riskScore: initialResult.riskScore,
+      findings: initialResult.summary.total,
+      reportUrl: `/report/${initialResult.id}`,
+    },
+  });
+});
+
+// List watchlist
+app.get('/watchlist', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const items = await db.getWatchlist(apiKey);
+  const hasAlerts = items.filter(i => i.alerts && i.alerts.length > 0);
+  res.json({
+    count: items.length,
+    alertCount: hasAlerts.length,
+    items: items.sort((a, b) => (b.lastScore || 0) - (a.lastScore || 0)),
+  });
+});
+
+// Check/re-scan all watchlist URLs (or one by id)
+app.post('/watchlist/check', scanLimiter, async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const { id: targetId } = req.body || {};
+  let items = await db.getWatchlist(apiKey);
+  if (targetId) {
+    items = items.filter(i => i.id === targetId);
+    if (items.length === 0) return res.status(404).json({ error: 'Watchlist item not found' });
+  }
+
+  const results = [];
+  for (const item of items) {
+    const prevRisk = item.lastRisk;
+    const prevScore = item.lastScore;
+    try {
+      const content = await fetchUrl(item.url);
+      const result = scanContent(content, item.url);
+      const scanId = recordScan(item.url, result);
+
+      const riskChanged = prevRisk !== result.riskLevel;
+      const scoreDelta = result.riskScore - (prevScore || 0);
+
+      // Update item
+      item.lastRisk = result.riskLevel;
+      item.lastScore = result.riskScore;
+      item.lastScanId = scanId;
+      item.lastScanAt = new Date().toISOString();
+      item.scanCount = (item.scanCount || 0) + 1;
+
+      // Record alert if risk changed
+      if (riskChanged) {
+        const alert = {
+          type: scoreDelta > 0 ? 'risk_increased' : 'risk_decreased',
+          from: prevRisk,
+          to: result.riskLevel,
+          scoreDelta,
+          detectedAt: new Date().toISOString(),
+          scanId,
+        };
+        item.alerts = [alert, ...(item.alerts || []).slice(0, 9)]; // Keep last 10 alerts
+
+        // Fire webhook if configured
+        if (item.webhook) {
+          fireCallback(item.webhook, {
+            event: 'risk_changed',
+            watchlistId: item.id,
+            url: item.url,
+            label: item.label,
+            ...alert,
+            reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+          });
+        }
+      }
+
+      await db.updateWatchlistItem(apiKey, item);
+
+      results.push({
+        id: item.id,
+        url: item.url,
+        label: item.label,
+        status: 'scanned',
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        previousRisk: prevRisk,
+        riskChanged,
+        scoreDelta,
+        findings: result.summary.total,
+        reportUrl: `/report/${scanId}`,
+      });
+    } catch (err) {
+      results.push({ id: item.id, url: item.url, status: 'error', error: err.message });
+    }
+  }
+
+  const changed = results.filter(r => r.riskChanged);
+  const increased = changed.filter(r => r.scoreDelta > 0);
+  const decreased = changed.filter(r => r.scoreDelta < 0);
+
+  res.json({
+    checkedAt: new Date().toISOString(),
+    total: results.length,
+    changed: changed.length,
+    riskIncreased: increased.length,
+    riskDecreased: decreased.length,
+    verdict: changed.length === 0
+      ? '✅ All clear — no risk changes detected.'
+      : increased.length > 0
+        ? `🔴 ${increased.length} URL(s) increased in risk! Review immediately.`
+        : `✅ ${decreased.length} URL(s) decreased in risk. Looking better.`,
+    results,
+  });
+});
+
+// Remove from watchlist
+app.delete('/watchlist/:id', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const item = await db.getWatchlistItem(apiKey, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Watchlist item not found' });
+  await db.removeWatchlistItem(apiKey, req.params.id);
+  res.json({ success: true, message: `Removed ${item.url} from watchlist`, removed: item });
+});
+
+// Get watchlist alerts (all risk changes across watched URLs)
+app.get('/watchlist/alerts', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const items = await db.getWatchlist(apiKey);
+  const allAlerts = [];
+  for (const item of items) {
+    if (item.alerts) {
+      for (const alert of item.alerts) {
+        allAlerts.push({ url: item.url, label: item.label, watchlistId: item.id, ...alert });
+      }
+    }
+  }
+  allAlerts.sort((a, b) => new Date(b.detectedAt) - new Date(a.detectedAt));
+  res.json({ count: allAlerts.length, items: allAlerts });
+});
+
 // --- OpenAPI 3.0 Spec ---
 app.get('/openapi.json', (req, res) => {
   res.json({
@@ -1198,6 +1461,7 @@ app.get('/openapi.json', (req, res) => {
     },
     servers: [{ url: 'https://skillaudit.vercel.app', description: 'Production' }],
     paths: {
+      '/gate': { get: { summary: 'Pre-install gate — should I install this skill?', description: 'The infrastructure endpoint. Returns a simple allow/warn/deny decision with minimal JSON. Designed for agents to call before installing ANY skill. One call, one answer.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill to check' }, { name: 'threshold', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' }, description: 'Risk threshold — deny at or above this level' }], responses: { '200': { description: 'Gate decision: {allow: bool, decision: "allow"|"warn"|"deny", risk, score, findings, verdict}' }, '400': { description: 'Missing URL or fetch error' } } } },
       '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
@@ -1223,6 +1487,13 @@ app.get('/openapi.json', (req, res) => {
       '/feed/since': { get: { summary: 'Get threats after a timestamp', parameters: [{ name: 'ts', in: 'query', required: true, schema: { type: 'integer' }, description: 'Unix timestamp in milliseconds' }], responses: { '200': { description: 'Threats since timestamp' } } } },
       '/feed/domains': { get: { summary: 'Recently flagged domains', responses: { '200': { description: 'Flagged domains list' } } } },
       '/feed/rules': { get: { summary: 'Trending detection rules — most triggered all-time and today', responses: { '200': { description: 'Rule hit statistics' } } } },
+      '/watchlist': {
+        post: { summary: 'Add URL to watchlist', description: 'Register a URL for continuous monitoring. Initial scan is performed immediately. Optional webhook for risk change notifications.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, label: { type: 'string' }, webhook: { type: 'string' } } } } } }, responses: { '200': { description: 'URL added with initial scan result' }, '401': { description: 'API key required' } } },
+        get: { summary: 'List watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Watchlist items with current risk status' } } },
+      },
+      '/watchlist/check': { post: { summary: 'Re-scan watched URLs and detect risk changes', description: 'Re-scans all watched URLs (or one by id). Returns which URLs changed risk level and fires webhooks for changes.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string', description: 'Optional: check only one watchlist item' } } } } } }, responses: { '200': { description: 'Check results with risk change detection' } } } },
+      '/watchlist/{id}': { delete: { summary: 'Remove URL from watchlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
+      '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });

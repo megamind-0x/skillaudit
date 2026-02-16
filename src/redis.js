@@ -234,6 +234,50 @@ async function getDailyRuleHits(date) {
   return obj;
 }
 
+// --- Watchlist ---
+
+async function addWatchlistItem(apiKey, item) {
+  // item: { id, url, addedAt, lastRisk, lastScore, lastScanAt, scanCount, alerts }
+  const key = `watchlist:${apiKey}`;
+  await redis('HSET', key, item.id, JSON.stringify(item));
+  // Also track in global index for stats
+  await redis('SADD', 'watchlist:ids', `${apiKey}:${item.id}`);
+}
+
+async function getWatchlist(apiKey) {
+  const key = `watchlist:${apiKey}`;
+  const val = await redis('HGETALL', key);
+  if (!val || !Array.isArray(val) || val.length === 0) return [];
+  const items = [];
+  for (let i = 0; i < val.length; i += 2) {
+    try { items.push(JSON.parse(val[i + 1])); } catch {}
+  }
+  return items;
+}
+
+async function getWatchlistItem(apiKey, itemId) {
+  const key = `watchlist:${apiKey}`;
+  const val = await redis('HGET', key, itemId);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function updateWatchlistItem(apiKey, item) {
+  const key = `watchlist:${apiKey}`;
+  return redis('HSET', key, item.id, JSON.stringify(item));
+}
+
+async function removeWatchlistItem(apiKey, itemId) {
+  const key = `watchlist:${apiKey}`;
+  await redis('HDEL', key, itemId);
+  await redis('SREM', 'watchlist:ids', `${apiKey}:${itemId}`);
+}
+
+async function getWatchlistCount() {
+  const val = await redis('SCARD', 'watchlist:ids');
+  return parseInt(val) || 0;
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
@@ -243,4 +287,5 @@ module.exports = {
   storeThreatEvent, getRecentThreats, getThreatsAfter,
   trackFlaggedDomain, getRecentFlaggedDomains,
   incrRuleHit, getRuleHits, getDailyRuleHits,
+  addWatchlistItem, getWatchlist, getWatchlistItem, updateWatchlistItem, removeWatchlistItem, getWatchlistCount,
 };

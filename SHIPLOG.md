@@ -1,5 +1,21 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-16 (10:00 AM) — Threat Intelligence Feed API
+**What:** Five new endpoints that turn SkillAudit into a real-time threat intelligence source for the AI skill ecosystem.
+**Endpoints:**
+- `GET /feed` — Main feed: recent threats, flagged domains, trending detection rules, severity breakdown, subscription options
+- `GET /feed/threats` — Paginated threat events with optional severity filter (critical/high/medium/low)
+- `GET /feed/since?ts=<unix_ms>` — Incremental updates since a timestamp (for polling consumers)
+- `GET /feed/domains` — Recently flagged domains (moderate+ risk only)
+- `GET /feed/rules` — Most triggered detection rules, all-time and today (trend detection)
+**How it works:**
+- Every scan now emits threat events to Redis for each actionable finding (up to 10 per scan)
+- Threat events stored in both a list (last 500) and a sorted set (for timestamp range queries)
+- Rule hits tracked globally + daily buckets with 7-day TTL for trend analysis
+- Domains flagged at moderate+ risk tracked in a sorted set by timestamp
+- Zero overhead on existing endpoints — all tracking is fire-and-forget
+**Why:** Before this, SkillAudit was a tool you queried — scan a URL, get a result, done. Now it's a **threat intelligence platform**. Security tools, agent frameworks, and other scanners can consume the feed to know what threats are active in the AI skill ecosystem RIGHT NOW. This is how SkillAudit becomes infrastructure — not just a scanner you use, but a data source others build on. Think VirusTotal's threat feed but for AI agent skills.
+
 ## 2026-02-16 (1:00 AM) — Domain Reputation API
 **What:** Two new endpoints that turn SkillAudit into a persistent reputation database for skill domains.
 **Endpoints:**

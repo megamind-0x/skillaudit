@@ -195,6 +195,30 @@ function recordScan(url, result) {
   if (domain) {
     db.trackDomainScan(domain, result.riskLevel, result.riskScore, result.summary?.total || 0, url);
   }
+  // Threat intelligence feed: emit threat events for actionable findings
+  const actionable = (result.findings || []).filter(f => !f.suppressed && f.severity !== 'info');
+  if (actionable.length > 0) {
+    const ts = new Date().toISOString();
+    for (const f of actionable.slice(0, 10)) { // Cap at 10 events per scan
+      db.storeThreatEvent({
+        scanId: id,
+        source: url,
+        domain: domain || 'unknown',
+        ruleId: f.ruleId,
+        severity: f.severity,
+        category: f.category,
+        name: f.name,
+        description: f.description,
+        line: f.line,
+        detectedAt: ts,
+      });
+      db.incrRuleHit(f.ruleId, f.severity);
+    }
+    // Track flagged domains (moderate+ risk only)
+    if (['moderate', 'high', 'critical'].includes(result.riskLevel) && domain) {
+      db.trackFlaggedDomain(domain, result.riskLevel, result.riskScore, url);
+    }
+  }
   return id;
 }
 
@@ -337,6 +361,11 @@ app.get('/', (req, res) => {
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
+        'GET /feed': 'Threat intelligence feed — recent threats, flagged domains, trending rules',
+        'GET /feed/threats': 'Recent threat events (filterable by severity)',
+        'GET /feed/since?ts=': 'Incremental threat updates since a timestamp',
+        'GET /feed/domains': 'Recently flagged domains',
+        'GET /feed/rules': 'Trending detection rules (all-time + today)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -1073,6 +1102,91 @@ app.post('/reputation/bulk', async (req, res) => {
   });
 });
 
+// --- Threat Intelligence Feed API ---
+app.get('/feed', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+  const severity = req.query.severity || null; // filter: critical, high, medium, low
+  const [threats, flaggedDomains, ruleHits, totalScans_] = await Promise.all([
+    db.getRecentThreats(limit, severity),
+    db.getRecentFlaggedDomains(10),
+    db.getRuleHits(),
+    db.getScanCount(),
+  ]);
+
+  // Build trending rules (top 10 by hit count)
+  const trendingRules = Object.entries(ruleHits)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 10)
+    .map(([ruleId, count]) => ({ ruleId, hitCount: count }));
+
+  // Severity breakdown of recent threats
+  const sevBreakdown = { critical: 0, high: 0, medium: 0, low: 0 };
+  threats.forEach(t => { if (sevBreakdown[t.severity] !== undefined) sevBreakdown[t.severity]++; });
+
+  // Unique domains in recent threats
+  const uniqueDomains = [...new Set(threats.map(t => t.domain).filter(Boolean))];
+
+  res.json({
+    feedVersion: '1.0',
+    generatedAt: new Date().toISOString(),
+    description: 'SkillAudit Threat Intelligence Feed — real-time security findings from AI skill scans',
+    totalScansProcessed: totalScans_,
+    recentThreats: {
+      count: threats.length,
+      severityBreakdown: sevBreakdown,
+      uniqueDomains: uniqueDomains.length,
+      items: threats,
+    },
+    flaggedDomains: {
+      count: flaggedDomains.length,
+      items: flaggedDomains,
+    },
+    trendingRules: {
+      count: trendingRules.length,
+      description: 'Most frequently triggered detection rules across all scans',
+      items: trendingRules,
+    },
+    subscribe: {
+      polling: 'GET /feed?severity=high&limit=50 — poll for updates',
+      since: 'GET /feed/since?ts=<unix_ms> — get threats after a timestamp',
+      webhook: 'POST /scan/url with callback parameter for per-scan notifications',
+    },
+  });
+});
+
+app.get('/feed/threats', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const severity = req.query.severity || null;
+  const threats = await db.getRecentThreats(limit, severity);
+  res.json({ count: threats.length, items: threats });
+});
+
+app.get('/feed/since', async (req, res) => {
+  const ts = parseInt(req.query.ts);
+  if (!ts) return res.status(400).json({ error: 'ts query parameter required (unix milliseconds)', example: '/feed/since?ts=1708070400000' });
+  const threats = await db.getThreatsAfter(ts);
+  res.json({ since: new Date(ts).toISOString(), count: threats.length, items: threats });
+});
+
+app.get('/feed/domains', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+  const domains = await db.getRecentFlaggedDomains(limit);
+  res.json({ count: domains.length, items: domains });
+});
+
+app.get('/feed/rules', async (req, res) => {
+  const [allTime, today] = await Promise.all([
+    db.getRuleHits(),
+    db.getDailyRuleHits(new Date().toISOString().slice(0, 10)),
+  ]);
+  const allTimeSorted = Object.entries(allTime).sort(([, a], [, b]) => b - a).map(([ruleId, count]) => ({ ruleId, hitCount: count }));
+  const todaySorted = Object.entries(today).sort(([, a], [, b]) => b - a).map(([ruleId, count]) => ({ ruleId, hitCount: count }));
+  res.json({
+    allTime: { count: allTimeSorted.length, items: allTimeSorted },
+    today: { count: todaySorted.length, items: todaySorted },
+  });
+});
+
 // --- OpenAPI 3.0 Spec ---
 app.get('/openapi.json', (req, res) => {
   res.json({
@@ -1104,6 +1218,11 @@ app.get('/openapi.json', (req, res) => {
       '/share/moltbook': { post: { summary: 'Share scan to Moltbook', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['scanId', 'apiKey'], properties: { scanId: { type: 'string' }, apiKey: { type: 'string' }, submolt: { type: 'string', default: 'general' } } } } } }, responses: { '200': { description: 'Post result' } } } },
       '/reputation/{domain}': { get: { summary: 'Get domain reputation', description: 'Returns aggregated reputation score based on all past scans for this domain. Includes scan count, risk distribution, average risk score, and trust level (trusted/moderate/suspicious/dangerous).', parameters: [{ name: 'domain', in: 'path', required: true, schema: { type: 'string' }, description: 'Domain hostname (e.g. github.com)' }], responses: { '200': { description: 'Domain reputation data' } } } },
       '/reputation/bulk': { post: { summary: 'Bulk domain reputation lookup (up to 50)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['domains'], properties: { domains: { type: 'array', items: { type: 'string' } } } } } } }, responses: { '200': { description: 'Bulk reputation results' } } } },
+      '/feed': { get: { summary: 'Threat intelligence feed — recent threats, flagged domains, trending rules', description: 'Aggregated threat intelligence from all SkillAudit scans. Use for monitoring the AI skill threat landscape. Poll periodically or use /feed/since for incremental updates.', parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 20 }, description: 'Number of recent threats (max 100)' }, { name: 'severity', in: 'query', schema: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] }, description: 'Filter by minimum severity' }], responses: { '200': { description: 'Threat intelligence feed' } } } },
+      '/feed/threats': { get: { summary: 'Recent threat events', parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } }, { name: 'severity', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'Threat events list' } } } },
+      '/feed/since': { get: { summary: 'Get threats after a timestamp', parameters: [{ name: 'ts', in: 'query', required: true, schema: { type: 'integer' }, description: 'Unix timestamp in milliseconds' }], responses: { '200': { description: 'Threats since timestamp' } } } },
+      '/feed/domains': { get: { summary: 'Recently flagged domains', responses: { '200': { description: 'Flagged domains list' } } } },
+      '/feed/rules': { get: { summary: 'Trending detection rules — most triggered all-time and today', responses: { '200': { description: 'Rule hit statistics' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });

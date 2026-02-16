@@ -159,10 +159,88 @@ async function getDomainReputation(domain) {
   };
 }
 
+// --- Threat Intelligence Feed ---
+
+// Store a threat event when a scan finds actionable findings
+async function storeThreatEvent(event) {
+  const payload = JSON.stringify(event);
+  await redis('LPUSH', 'feed:threats', payload);
+  await redis('LTRIM', 'feed:threats', 0, 499); // Keep last 500
+  // Track in sorted set by timestamp for range queries
+  await redis('ZADD', 'feed:threats:ts', Date.now(), payload);
+  // Trim sorted set to last 500
+  const count = await redis('ZCARD', 'feed:threats:ts');
+  if (count && count > 500) {
+    await redis('ZREMRANGEBYRANK', 'feed:threats:ts', 0, count - 501);
+  }
+}
+
+async function getRecentThreats(count = 50, minSeverity = null) {
+  const val = await redis('LRANGE', 'feed:threats', 0, count - 1);
+  if (!val) return [];
+  let events = val.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+  if (minSeverity) {
+    const severityOrder = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+    const minLevel = severityOrder[minSeverity] || 0;
+    events = events.filter(e => (severityOrder[e.severity] || 0) >= minLevel);
+  }
+  return events;
+}
+
+async function getThreatsAfter(timestampMs) {
+  const val = await redis('ZRANGEBYSCORE', 'feed:threats:ts', timestampMs, '+inf');
+  if (!val) return [];
+  return val.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+}
+
+// Track flagged domains in a sorted set (score = timestamp)
+async function trackFlaggedDomain(domain, riskLevel, riskScore, url) {
+  const payload = JSON.stringify({ domain, riskLevel, riskScore, url, flaggedAt: new Date().toISOString() });
+  await redis('ZADD', 'feed:flagged_domains', Date.now(), payload);
+  const count = await redis('ZCARD', 'feed:flagged_domains');
+  if (count && count > 200) {
+    await redis('ZREMRANGEBYRANK', 'feed:flagged_domains', 0, count - 201);
+  }
+}
+
+async function getRecentFlaggedDomains(count = 30) {
+  const val = await redis('ZREVRANGE', 'feed:flagged_domains', 0, count - 1);
+  if (!val) return [];
+  return val.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+}
+
+// Track rule hit counts (for trending rules)
+async function incrRuleHit(ruleId, severity) {
+  await redis('HINCRBY', 'feed:rule_hits', ruleId, 1);
+  // Also track in daily bucket for trend detection
+  const day = new Date().toISOString().slice(0, 10);
+  await redis('HINCRBY', `feed:rule_hits:${day}`, ruleId, 1);
+  await redis('EXPIRE', `feed:rule_hits:${day}`, 604800); // 7-day TTL
+}
+
+async function getRuleHits() {
+  const val = await redis('HGETALL', 'feed:rule_hits');
+  if (!val || !Array.isArray(val)) return {};
+  const obj = {};
+  for (let i = 0; i < val.length; i += 2) obj[val[i]] = parseInt(val[i + 1]) || 0;
+  return obj;
+}
+
+async function getDailyRuleHits(date) {
+  const val = await redis('HGETALL', `feed:rule_hits:${date}`);
+  if (!val || !Array.isArray(val)) return {};
+  const obj = {};
+  for (let i = 0; i < val.length; i += 2) obj[val[i]] = parseInt(val[i + 1]) || 0;
+  return obj;
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
   incrThreatType, getThreatTypes,
   storeScanResult, storeScanById, getScanById, getRecentScans,
   trackDomainScan, getDomainReputation,
+  storeThreatEvent, getRecentThreats, getThreatsAfter,
+  trackFlaggedDomain, getRecentFlaggedDomains,
+  incrRuleHit, getRuleHits, getDailyRuleHits,
 };

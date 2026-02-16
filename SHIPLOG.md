@@ -1,5 +1,19 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-17 (1:00 AM) — Signed Audit Certificates
+**What:** Cryptographically signed certificates that prove a skill was audited by SkillAudit.
+**Endpoints:**
+- `GET /certificate/:scanId` — Returns a signed certificate with HMAC-SHA256 signature, content hash, risk assessment, and a compact base64url token
+- `GET /certificate/verify?token=<token>` — Verifies a certificate token. Browsers get a styled HTML verification page; APIs get JSON `{valid: true/false}`
+**Certificate includes:**
+- SHA-256 hash of the scanned content (tamper detection — if content changed, the hash won't match)
+- Risk level, score, findings count, critical count, verdict
+- Issue date + 30-day expiry
+- Issuer attribution (`skillaudit.vercel.app`)
+- HMAC-SHA256 signature (unforgeable without server secret)
+- Compact token for embedding in READMEs: `[![SkillAudit](badge-url)](verify-url)`
+**Why:** This is the "SSL certificate" play. Before this, SkillAudit could tell you a skill was safe *right now*, but there was no portable, verifiable proof. Now registries can require "show me a SkillAudit certificate" before listing a skill. Agent frameworks can verify certificates programmatically. Skill authors can embed clickable verification badges in their READMEs. The content hash means if someone modifies the skill after certification, the hash mismatch is detectable. This creates a **trust chain** — SkillAudit issues certificates, registries verify them, users trust the ecosystem. That's infrastructure.
+
 ## 2026-02-16 (4:00 PM) — Pre-Install Gate API
 **What:** `GET /gate?url=<skill_url>` — the infrastructure endpoint. One call, one answer: "should I install this?"
 **Response:** `{allow: true/false, decision: "allow"|"warn"|"deny", risk, score, findings, verdict, domainReputation, topFindings}`

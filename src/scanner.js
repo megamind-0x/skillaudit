@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { analyzeCapabilities } = require('./capabilities');
 const { detectSecrets } = require('./secrets');
 
@@ -414,10 +415,14 @@ function scanContent(content, sourceUrl = null) {
   const highCount = actionable.filter(f => f.severity === 'high').length;
   const medCount = actionable.filter(f => f.severity === 'medium').length;
 
+  // Content hash for certificate verification
+  const contentHash = crypto.createHash('sha256').update(content).digest('hex');
+
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
     version: '0.8.1',
+    contentHash,
     riskLevel: risk,
     riskScore: totalScore,
     summary: {

@@ -425,6 +425,8 @@ app.get('/', (req, res) => {
         'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
         'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
+        'GET /certificate/:id': 'Signed audit certificate — cryptographic proof a skill was scanned',
+        'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -1450,6 +1452,109 @@ app.get('/watchlist/alerts', async (req, res) => {
   res.json({ count: allAlerts.length, items: allAlerts });
 });
 
+// --- Scan Certificates (Signed Proof of Audit) ---
+const CERT_SECRET = process.env.SKILLAUDIT_CERT_SECRET || crypto.randomBytes(32).toString('hex');
+
+function generateCertificate(scanResult) {
+  const payload = {
+    v: 1,
+    id: scanResult.id,
+    source: scanResult.source || scanResult.url,
+    contentHash: scanResult.contentHash || null,
+    risk: scanResult.riskLevel,
+    score: scanResult.riskScore,
+    findings: scanResult.summary ? scanResult.summary.total : 0,
+    critical: scanResult.summary ? scanResult.summary.critical : 0,
+    verdict: scanResult.verdict,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
+    issuer: 'skillaudit.vercel.app',
+  };
+  const data = JSON.stringify(payload);
+  const signature = crypto.createHmac('sha256', CERT_SECRET).update(data).digest('hex');
+  return { ...payload, signature };
+}
+
+function verifyCertificateSignature(cert) {
+  const { signature, ...payload } = cert;
+  if (!signature) return { valid: false, reason: 'Missing signature' };
+  const data = JSON.stringify(payload);
+  const expected = crypto.createHmac('sha256', CERT_SECRET).update(data).digest('hex');
+  if (signature !== expected) return { valid: false, reason: 'Invalid signature' };
+  if (new Date(payload.expiresAt) < new Date()) return { valid: false, reason: 'Certificate expired' };
+  return { valid: true };
+}
+
+// Verify a certificate token (MUST be before /certificate/:id to avoid route collision)
+app.get('/certificate/verify', (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(400).json({ valid: false, error: 'token query parameter required' });
+
+  let cert;
+  try {
+    cert = JSON.parse(Buffer.from(token, 'base64url').toString());
+  } catch {
+    return res.status(400).json({ valid: false, error: 'Invalid token format' });
+  }
+
+  const result = verifyCertificateSignature(cert);
+
+  // If HTML is accepted, render a verification page
+  if (req.headers.accept && req.headers.accept.includes('text/html') && !req.query.format) {
+    const color = result.valid ? '#00ff88' : '#ff4444';
+    const icon = result.valid ? '✅' : '❌';
+    const statusText = result.valid ? 'VERIFIED' : `INVALID: ${result.reason}`;
+    return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>SkillAudit Certificate Verification</title>
+<meta property="og:title" content="SkillAudit Certificate: ${result.valid ? 'Verified' : 'Invalid'}">
+<style>body{background:#0f0f23;color:#e0e0e0;font-family:monospace;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
+.card{background:#111133;border:2px solid ${color};border-radius:12px;padding:2rem;max-width:500px;width:90%;text-align:center}
+a{color:#00ff88}</style></head><body><div class="card">
+<div style="font-size:3rem">${icon}</div>
+<h1 style="color:${color};font-size:1.5rem;margin:0.5rem 0">${statusText}</h1>
+${result.valid ? `
+<div style="text-align:left;margin-top:1rem;background:#0f0f23;padding:1rem;border-radius:8px;font-size:0.85rem">
+<p><strong>Scan ID:</strong> ${esc(cert.id)}</p>
+<p><strong>Source:</strong> ${esc(cert.source || 'unknown')}</p>
+<p><strong>Risk:</strong> <span style="color:${riskColor(cert.risk)}">${esc(cert.risk).toUpperCase()}</span> (score: ${cert.score})</p>
+<p><strong>Findings:</strong> ${cert.findings} total, ${cert.critical} critical</p>
+<p><strong>Verdict:</strong> ${esc(cert.verdict)}</p>
+<p><strong>Issued:</strong> ${esc(cert.issuedAt)}</p>
+<p><strong>Expires:</strong> ${esc(cert.expiresAt)}</p>
+<p><strong>Content Hash:</strong> <code style="font-size:0.7rem;word-break:break-all">${esc(cert.contentHash || 'N/A')}</code></p>
+</div>
+<p style="margin-top:1rem"><a href="/report/${esc(cert.id)}">View Full Report →</a></p>` : ''}
+<p style="margin-top:1rem;color:#555;font-size:0.8rem">Issued by <a href="https://skillaudit.vercel.app">SkillAudit</a></p>
+</div></body></html>`);
+  }
+
+  res.json({
+    ...result,
+    certificate: result.valid ? cert : undefined,
+    reportUrl: result.valid ? `https://skillaudit.vercel.app/report/${cert.id}` : undefined,
+  });
+});
+
+// Get certificate for a scan
+app.get('/certificate/:id', async (req, res) => {
+  const result = await getScanResult(req.params.id);
+  if (!result) return res.status(404).json({ error: 'Scan not found', hint: 'Scan the skill first, then request a certificate.' });
+
+  const cert = generateCertificate(result);
+  const token = Buffer.from(JSON.stringify(cert)).toString('base64url');
+
+  res.json({
+    certificate: cert,
+    token,
+    verifyUrl: `https://skillaudit.vercel.app/certificate/verify?token=${token}`,
+    embedMarkdown: `[![SkillAudit Certified](https://skillaudit.vercel.app/badge/${getDomain(result.source || result.url || '') || 'unknown'}.svg)](https://skillaudit.vercel.app/certificate/verify?token=${token})`,
+    usage: {
+      verify: 'GET /certificate/verify?token=<token>',
+      badge: 'Embed the markdown badge in your README — clicking it verifies the certificate',
+      api: 'Agents can verify programmatically: GET /certificate/verify?token=<token> → {valid: true/false}',
+    },
+  });
+});
+
 // --- OpenAPI 3.0 Spec ---
 app.get('/openapi.json', (req, res) => {
   res.json({
@@ -1494,6 +1599,8 @@ app.get('/openapi.json', (req, res) => {
       '/watchlist/check': { post: { summary: 'Re-scan watched URLs and detect risk changes', description: 'Re-scans all watched URLs (or one by id). Returns which URLs changed risk level and fires webhooks for changes.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string', description: 'Optional: check only one watchlist item' } } } } } }, responses: { '200': { description: 'Check results with risk change detection' } } } },
       '/watchlist/{id}': { delete: { summary: 'Remove URL from watchlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
+      '/certificate/{id}': { get: { summary: 'Get signed audit certificate for a scan', description: 'Returns a cryptographically signed certificate proving a skill was audited by SkillAudit. Includes content hash, risk level, findings count, expiry date, and a compact token for embedding. Certificates expire after 30 days.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }], responses: { '200': { description: 'Signed certificate with verification URL and embed markdown' }, '404': { description: 'Scan not found' } } } },
+      '/certificate/verify': { get: { summary: 'Verify an audit certificate token', description: 'Verifies the cryptographic signature on a SkillAudit certificate. Returns valid/invalid status. Browsers get an HTML verification page; APIs get JSON. Use this to programmatically verify that a skill was audited.', parameters: [{ name: 'token', in: 'query', required: true, schema: { type: 'string' }, description: 'Base64url-encoded certificate token from /certificate/:id' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json'] }, description: 'Force JSON response' }], responses: { '200': { description: 'Verification result: {valid: true/false, certificate: {...}}' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });

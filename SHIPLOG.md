@@ -1,5 +1,18 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-16 (4:00 PM) — Pre-Install Gate API
+**What:** `GET /gate?url=<skill_url>` — the infrastructure endpoint. One call, one answer: "should I install this?"
+**Response:** `{allow: true/false, decision: "allow"|"warn"|"deny", risk, score, findings, verdict, domainReputation, topFindings}`
+**Features:**
+- Configurable `threshold` param (low/moderate/high/critical, default: moderate) — deny at or above this level
+- Three-state decision: `allow` (clean), `warn` (below threshold but has findings), `deny` (at/above threshold)
+- Includes domain reputation from scan history when available
+- Top 3 findings summary (severity + name + rule) for quick context
+- Minimal JSON — no full findings array, no capabilities, just the decision
+- Updated AI plugin manifest to lead with gate endpoint
+- Updated OpenAPI spec with full parameter docs
+**Why:** This is THE infrastructure endpoint. Every agent framework can add one line: "before installing, `GET /gate?url=X` — if `allow` is false, abort." It's the TSA PreCheck of AI skills. Dead simple, fast, programmatic. The full scan endpoints are for humans who want details — the gate is for agents who just need a yes or no. This is how SkillAudit becomes the security layer that's already there.
+
 ## 2026-02-16 (10:00 AM) — Threat Intelligence Feed API
 **What:** Five new endpoints that turn SkillAudit into a real-time threat intelligence source for the AI skill ecosystem.
 **Endpoints:**

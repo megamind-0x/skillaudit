@@ -334,6 +334,7 @@ app.get('/', (req, res) => {
         'GET /badge/:domain.svg': 'Embeddable SVG badge for READMEs',
         'GET /badge/scan.svg?url=': 'Live scan → SVG badge in one request',
         'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
+        'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
@@ -532,6 +533,93 @@ app.get('/capabilities/:id', async (req, res) => {
     capabilityStats: result.capabilityStats || {},
     analysisVersion: result.version
   });
+});
+
+// --- GitHub Repo Scanner Route (must be before /scan/:id) ---
+app.get('/scan/repo', scanLimiter, async (req, res) => {
+  const repoInput = req.query.repo;
+  const branch = req.query.branch || 'main';
+
+  if (!repoInput) {
+    return res.status(400).json({
+      error: 'repo query parameter is required',
+      example: '/scan/repo?repo=owner/repo-name',
+      hint: 'Pass a GitHub repository in owner/name format',
+    });
+  }
+
+  let owner, repo;
+  const match = repoInput.match(/(?:github\.com\/)?([^\/\s]+)\/([^\/\s?#]+)/);
+  if (!match) {
+    return res.status(400).json({ error: 'Invalid repo format. Use owner/repo (e.g. modelcontextprotocol/servers)' });
+  }
+  owner = match[1];
+  repo = match[2].replace(/\.git$/, '');
+
+  try {
+    const skillFiles = await discoverSkillFiles(owner, repo, branch);
+
+    if (skillFiles.length === 0) {
+      return res.json({
+        repo: `${owner}/${repo}`, branch, filesScanned: 0,
+        message: 'No skill files found in this repository',
+        hint: 'We look for SKILL.md, skill.json, plugin.json, mcp.json, ai-plugin.json, and files in skills/tools/plugins directories',
+        riskLevel: 'unknown',
+      });
+    }
+
+    const results = await Promise.all(skillFiles.map(async (filePath) => {
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+      try {
+        const content = await fetchUrl(rawUrl);
+        const result = scanContent(content, rawUrl);
+        const id = recordScan(rawUrl, result);
+        return {
+          file: filePath, url: rawUrl, status: 'scanned', id,
+          riskLevel: result.riskLevel, riskScore: result.riskScore,
+          findings: result.summary.total, critical: result.summary.critical,
+          high: result.summary.high, reportUrl: `/report/${id}`,
+        };
+      } catch (err) {
+        return { file: filePath, status: 'error', error: err.message };
+      }
+    }));
+
+    const scanned = results.filter(r => r.status === 'scanned');
+    const failed = results.filter(r => r.status === 'error');
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstRisk = scanned.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    const totalFindings = scanned.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = scanned.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = scanned.reduce((s, r) => s + r.high, 0);
+    const totalScore = scanned.reduce((s, r) => s + r.riskScore, 0);
+
+    res.json({
+      repo: `${owner}/${repo}`, branch, repoUrl: `https://github.com/${owner}/${repo}`,
+      filesDiscovered: skillFiles.length, filesScanned: scanned.length, filesFailed: failed.length,
+      overallRisk: worstRisk, totalRiskScore: totalScore, totalFindings, totalCritical, totalHigh,
+      verdict: totalFindings === 0
+        ? `✅ Repository clean — ${scanned.length} skill file(s) scanned, no issues found.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues found — ${totalCritical} critical, ${totalHigh} high across ${scanned.length} files. Manual audit required.`
+          : totalHigh > 0
+            ? `🔶 High risk findings — ${totalHigh} high severity issues across ${scanned.length} files. Review recommended.`
+            : `⚠️ ${totalFindings} finding(s) across ${scanned.length} files. Minor concerns detected.`,
+      files: results,
+      badgeUrl: `https://skillaudit.vercel.app/badge/github.com/${owner}/${repo}.svg`,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({
+        error: `Repository not found: ${owner}/${repo}`,
+        hint: 'Make sure the repo exists and is public. Try a different branch with ?branch=master',
+      });
+    }
+    res.status(500).json({ error: `Failed to scan repo: ${err.message}` });
+  }
 });
 
 // --- Shared Scan Result (JSON) ---
@@ -867,6 +955,82 @@ app.post('/share/moltbook', scanLimiter, async (req, res) => {
   }
 });
 
+// --- GitHub Repository Scanner (MOVED - see above getScanResult) ---
+// Skill file patterns to look for in repos
+const SKILL_FILE_PATTERNS = [
+  'SKILL.md', 'skill.md', 'skill.json', 'skill.yaml', 'skill.yml',
+  'TOOL.md', 'tool.md', 'plugin.json', 'manifest.json',
+  'ai-plugin.json', '.well-known/ai-plugin.json',
+  'mcp.json', '.mcp.json', 'mcp.yaml', 'mcp.yml',
+  'AGENTS.md', 'agents.md',
+];
+
+// File extensions that commonly contain skill definitions
+const SKILL_EXTENSIONS = ['.skill.md', '.tool.md', '.skill.json', '.skill.yaml'];
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Request timeout (15s)')), 15000);
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, {
+      headers: { 'User-Agent': 'SkillAudit/0.8', 'Accept': 'application/json' },
+      timeout: 15000,
+    }, (res) => {
+      if (res.statusCode !== 200) { clearTimeout(timeout); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      let data = '';
+      res.on('data', chunk => { data += chunk; if (data.length > 1024 * 256) { res.destroy(); clearTimeout(timeout); reject(new Error('Response too large')); } });
+      res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON')); } });
+    }).on('error', (e) => { clearTimeout(timeout); reject(e); });
+  });
+}
+
+async function discoverSkillFiles(owner, repo, branch) {
+  // Use GitHub API to get the repo tree recursively
+  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const tree = await fetchJson(treeUrl);
+
+  if (!tree.tree) throw new Error('Could not read repository tree');
+
+  const skillFiles = [];
+
+  for (const item of tree.tree) {
+    if (item.type !== 'blob') continue;
+    const filename = item.path.split('/').pop().toLowerCase();
+    const pathLower = item.path.toLowerCase();
+
+    // Match known skill file names
+    if (SKILL_FILE_PATTERNS.some(p => filename === p.toLowerCase())) {
+      skillFiles.push(item.path);
+      continue;
+    }
+
+    // Match skill extensions
+    if (SKILL_EXTENSIONS.some(ext => pathLower.endsWith(ext))) {
+      skillFiles.push(item.path);
+      continue;
+    }
+
+    // Match README.md in src/ subdirectories (common for MCP server repos)
+    if (filename === 'readme.md' && /^src\/[^\/]+\/readme\.md$/i.test(pathLower)) {
+      skillFiles.push(item.path);
+      continue;
+    }
+
+    // Match files in skill-related directories
+    if (/\b(skills?|tools?|plugins?|mcp|servers?)\b/i.test(item.path) &&
+        /\.(md|json|yaml|yml)$/i.test(item.path) &&
+        item.size && item.size < 100000) {
+      const dirPart = item.path.split('/').slice(0, -1).join('/').toLowerCase();
+      if (/\b(skills?|tools?|plugins?|mcp|servers?)\b/.test(dirPart)) {
+        skillFiles.push(item.path);
+      }
+    }
+  }
+
+  // Deduplicate and limit
+  return [...new Set(skillFiles)].slice(0, 30);
+}
+
 // --- Domain Reputation API ---
 app.get('/reputation/:domain', async (req, res) => {
   const domain = req.params.domain.toLowerCase();
@@ -926,6 +1090,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
+      '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },
       '/rules': { get: { summary: 'List detection rules', responses: { '200': { description: 'Rule list' } } } },

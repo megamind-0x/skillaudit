@@ -1,5 +1,24 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-17 (10:00 PM) — MCP Server (Model Context Protocol Native Integration)
+**What:** SkillAudit is now an MCP server. Any MCP-compatible agent can use SkillAudit as a native tool — no HTTP, no API keys, just `npx skillaudit --mcp`.
+**Tools exposed:**
+- `skillaudit_gate` — Pre-install allow/warn/deny decision (the infrastructure endpoint, now native)
+- `skillaudit_scan` — Full scan by URL with detailed findings
+- `skillaudit_scan_content` — Scan raw content directly (local files, generated code)
+- `skillaudit_reputation` — Domain reputation lookup from historical scan data
+- `skillaudit_batch` — Scan up to 10 URLs at once with risk summary
+**Technical:**
+- Full MCP protocol: JSON-RPC 2.0 over stdio, Content-Length framing, protocol version 2024-11-05
+- Runs the local scanning engine — zero API calls needed for scan/gate operations
+- Reputation falls back to hosted API (skillaudit.vercel.app)
+- Works with Claude Desktop, Cursor, Windsurf, OpenClaw, and any MCP client
+**Config example (Claude Desktop):**
+```json
+{ "mcpServers": { "skillaudit": { "command": "npx", "args": ["skillaudit", "--mcp"] } } }
+```
+**Why:** This is THE infrastructure play. Before this, agents had to know about SkillAudit's HTTP API, construct URLs, parse responses. Now it's a native tool that shows up in their tool list automatically. An agent sees `skillaudit_gate` as a built-in capability, just like file reading or web browsing. The MCP ecosystem is where agents discover tools — and now SkillAudit is there. Every MCP-compatible agent can call `skillaudit_gate` before installing anything, with zero setup beyond adding one config line. That's how you become infrastructure — not a service agents call, but a capability they have.
+
 ## 2026-02-17 (7:00 AM) — SARIF v2.1.0 Output (Industry-Standard Security Format)
 **What:** Full SARIF (Static Analysis Results Interchange Format) v2.1.0 support — the universal language for security scanners.
 **Endpoints:**

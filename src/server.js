@@ -435,6 +435,10 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+app.get('/lattice', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'lattice.html'));
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', version: '0.7.0', uptime: process.uptime() });
 });

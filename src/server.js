@@ -2000,7 +2000,7 @@ app.post('/registry/create', scanLimiter, async (req, res) => {
 
   // Auto-scan: trigger background trust score calculation
   const agentDomain = agentData.endpoints?.api ? getDomain(agentData.endpoints.api) : null;
-  trust.backgroundTrustScan(slug, agentData, profile.createdAt, agentDomain).catch(() => {});
+  trust.backgroundTrustScan(slug, agentData, profile.createdAt, agentDomain).catch(e => console.error('[trust] auto-scan failed for', slug, e.message));
 
   res.json({
     success: true,

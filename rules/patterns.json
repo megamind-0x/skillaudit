@@ -252,6 +252,152 @@
         "echo.*>.*SOUL\\.md",
         "cat.*>.*AGENTS\\.md"
       ]
+    },
+    {
+      "id": "TOOL_POISONING",
+      "severity": "critical",
+      "category": "agent_manipulation",
+      "name": "Tool output poisoning",
+      "description": "Skill injects hidden instructions in tool output to manipulate the calling agent's behavior",
+      "patterns": [
+        "\\[INST\\]",
+        "\\[/INST\\]",
+        "<\\|im_start\\|>system",
+        "<\\|im_end\\|>",
+        "<<SYS>>",
+        "<</SYS>>",
+        "\\[SYSTEM\\]",
+        "IMPORTANT:\\s*(?:ignore|disregard|override|forget)",
+        "NOTE TO AI:\\s",
+        "INSTRUCTION FOR (?:AI|AGENT|ASSISTANT|MODEL):",
+        "HIDDEN INSTRUCTION",
+        "<system>.*</system>",
+        "<!-- (?:system|instruction|override)"
+      ]
+    },
+    {
+      "id": "TOOL_SHADOW",
+      "severity": "high",
+      "category": "agent_manipulation",
+      "name": "Tool shadowing / redefinition",
+      "description": "Skill attempts to redefine, override, or shadow other tools to intercept their data",
+      "patterns": [
+        "override.*tool",
+        "redefine.*tool",
+        "replace.*(?:function|method|handler|tool).*with",
+        "intercept.*(?:request|call|invocation)",
+        "proxy.*(?:tool|function|handler)",
+        "monkey.?patch",
+        "prototype\\.(?:call|apply|bind)\\s*=",
+        "__proto__\\s*=",
+        "Object\\.defineProperty.*(?:get|set|value)",
+        "Proxy\\s*\\(\\s*(?:target|handler)"
+      ]
+    },
+    {
+      "id": "INVISIBLE_TEXT",
+      "severity": "high",
+      "category": "obfuscation",
+      "name": "Invisible Unicode / zero-width characters",
+      "description": "Skill contains invisible Unicode characters that may hide malicious instructions from human review",
+      "patterns": [
+        "\\\\u200b",
+        "\\\\u200c",
+        "\\\\u200d",
+        "\\\\u2060",
+        "\\\\u2061",
+        "\\\\u2062",
+        "\\\\u2063",
+        "\\\\u2064",
+        "\\\\ufeff",
+        "\\\\u00ad",
+        "&#x200[bBcCdD];",
+        "&#8203;",
+        "&#8204;",
+        "&#8205;"
+      ]
+    },
+    {
+      "id": "TIME_BOMB",
+      "severity": "high",
+      "category": "evasion",
+      "name": "Time-based activation / logic bomb",
+      "description": "Skill contains code that activates conditionally based on date, time, or execution count — may evade initial scanning",
+      "patterns": [
+        "new Date\\(\\).*(?:getMonth|getFullYear|getDate|getTime).*(?:>|<|>=|<=|===|==)\\s*\\d",
+        "Date\\.now\\(\\)\\s*(?:>|<|>=|<=)\\s*\\d{10,}",
+        "setTimeout\\s*\\(.*\\d{5,}",
+        "setInterval\\s*\\(.*\\d{5,}",
+        "(?:if|when|after)\\s+.*(?:days?|hours?|minutes?).*(?:then|execute|run|activate)",
+        "activation[_-]?date",
+        "trigger[_-]?(?:after|date|time)",
+        "dormant.*(?:until|period|phase)",
+        "sleep\\s*\\(\\s*\\d{4,}"
+      ]
+    },
+    {
+      "id": "SSRF_PATTERN",
+      "severity": "high",
+      "category": "network",
+      "name": "Server-Side Request Forgery (SSRF)",
+      "description": "Skill crafts requests to internal/cloud metadata endpoints or uses URL schemes to access internal services",
+      "patterns": [
+        "169\\.254\\.169\\.254",
+        "metadata\\.google\\.internal",
+        "metadata\\.aws",
+        "/latest/meta-data",
+        "/latest/api/token",
+        "instance/computeMetadata",
+        "file:///",
+        "gopher://",
+        "dict://",
+        "http://localhost",
+        "http://127\\.0\\.0\\.1",
+        "http://0\\.0\\.0\\.0",
+        "http://\\[::1\\]",
+        "http://0x7f"
+      ]
+    },
+    {
+      "id": "SUPPLY_CHAIN",
+      "severity": "high",
+      "category": "supply_chain",
+      "name": "Supply chain attack indicators",
+      "description": "Skill dynamically loads code from external sources or uses dependency confusion patterns",
+      "patterns": [
+        "require\\s*\\(\\s*['\"]https?://",
+        "import\\s+.*from\\s+['\"]https?://",
+        "eval\\s*\\(\\s*(?:await\\s+)?fetch",
+        "eval\\s*\\(\\s*(?:await\\s+)?axios",
+        "new Function\\s*\\(.*fetch",
+        "npm install\\s+(?!--|@)\\S+.*&&",
+        "pip install\\s+\\S+.*&&.*python",
+        "curl.*\\|\\s*(?:bash|sh|python|node|perl)",
+        "wget.*\\|\\s*(?:bash|sh|python|node|perl)",
+        "import\\(\\s*['\"]https?://",
+        "globalThis\\[.*\\]\\s*=",
+        "window\\[.*\\]\\s*="
+      ]
+    },
+    {
+      "id": "EXFIL_COVERT",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "name": "Covert data exfiltration channel",
+      "description": "Skill uses DNS, image URLs, or other covert channels to exfiltrate data without obvious network calls",
+      "patterns": [
+        "dns\\.resolve.*\\$",
+        "nslookup.*\\$\\(",
+        "dig\\s+.*\\$\\(",
+        "img\\s+src=.*\\$\\{",
+        "<img.*src=.*encodeURIComponent",
+        "new Image\\(\\)\\.src\\s*=",
+        "beacon.*send",
+        "navigator\\.sendBeacon",
+        "\\?data=.*base64",
+        "\\?exfil=",
+        "\\?d=.*encode"
+      ]
     }
   ]
 }

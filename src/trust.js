@@ -189,7 +189,9 @@ async function backgroundTrustScan(slug, agentData, registeredAt, domain) {
       const content = await fetchContent(url);
       scanResults = scanContent(content, url);
       break; // Use first successful scan
-    } catch { /* continue */ }
+    } catch (e) {
+      console.error(`[trust] scan failed for ${url}:`, e.message);
+    }
   }
 
   // Check MCP endpoint liveness

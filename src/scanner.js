@@ -293,6 +293,57 @@ function analyzeUrls(content, lines) {
   return findings;
 }
 
+// --- Invisible Unicode detection (raw bytes) ---
+function detectInvisibleUnicode(content, lines) {
+  const findings = [];
+  // Actual zero-width and invisible characters (raw, not escaped)
+  const invisibleChars = [
+    { char: '\u200B', name: 'Zero-width space' },
+    { char: '\u200C', name: 'Zero-width non-joiner' },
+    { char: '\u200D', name: 'Zero-width joiner' },
+    { char: '\u2060', name: 'Word joiner' },
+    { char: '\u2061', name: 'Function application' },
+    { char: '\u2062', name: 'Invisible times' },
+    { char: '\u2063', name: 'Invisible separator' },
+    { char: '\u2064', name: 'Invisible plus' },
+    { char: '\uFEFF', name: 'Zero-width no-break space (BOM)' },
+    { char: '\u00AD', name: 'Soft hyphen' },
+    { char: '\u034F', name: 'Combining grapheme joiner' },
+    { char: '\u061C', name: 'Arabic letter mark' },
+    { char: '\u180E', name: 'Mongolian vowel separator' },
+    { char: '\u2028', name: 'Line separator' },
+    { char: '\u2029', name: 'Paragraph separator' },
+    { char: '\u202A', name: 'LTR embedding' },
+    { char: '\u202B', name: 'RTL embedding' },
+    { char: '\u202C', name: 'Pop directional' },
+    { char: '\u202D', name: 'LTR override' },
+    { char: '\u202E', name: 'RTL override' },
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    for (const ic of invisibleChars) {
+      if (lines[i].includes(ic.char)) {
+        // Count occurrences
+        const count = (lines[i].split(ic.char).length - 1);
+        // BOM at line 0 position 0 is normal, skip single occurrence
+        if (ic.char === '\uFEFF' && i === 0 && count === 1) continue;
+        findings.push({
+          ruleId: 'INVISIBLE_UNICODE_RAW',
+          severity: 'high',
+          category: 'obfuscation',
+          name: `Invisible character: ${ic.name}`,
+          description: `Line contains ${count} invisible ${ic.name} character(s) (U+${ic.char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}). May hide malicious content from human review.`,
+          line: i + 1,
+          lineContent: lines[i].trim().substring(0, 200),
+          match: `U+${ic.char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} x${count}`,
+          suppressed: false,
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 // --- Intent analysis (natural language) ---
 function analyzeIntent(lines, codeBlockMap) {
   const findings = [];
@@ -368,6 +419,9 @@ function scanContent(content, sourceUrl = null) {
   // 5. Hardcoded secret detection
   findings.push(...detectSecrets(content, lines));
 
+  // 5.5. Raw invisible Unicode detection
+  findings.push(...detectInvisibleUnicode(content, lines));
+
   // 6. Capability analysis (v0.6.1)
   const capabilityAnalysis = analyzeCapabilities(content);
   
@@ -421,7 +475,7 @@ function scanContent(content, sourceUrl = null) {
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
-    version: '0.8.1',
+    version: '0.8.2',
     contentHash,
     riskLevel: risk,
     riskScore: totalScore,

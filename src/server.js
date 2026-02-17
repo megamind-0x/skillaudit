@@ -1601,6 +1601,8 @@ app.get('/openapi.json', (req, res) => {
       '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
       '/certificate/{id}': { get: { summary: 'Get signed audit certificate for a scan', description: 'Returns a cryptographically signed certificate proving a skill was audited by SkillAudit. Includes content hash, risk level, findings count, expiry date, and a compact token for embedding. Certificates expire after 30 days.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }], responses: { '200': { description: 'Signed certificate with verification URL and embed markdown' }, '404': { description: 'Scan not found' } } } },
       '/certificate/verify': { get: { summary: 'Verify an audit certificate token', description: 'Verifies the cryptographic signature on a SkillAudit certificate. Returns valid/invalid status. Browsers get an HTML verification page; APIs get JSON. Use this to programmatically verify that a skill was audited.', parameters: [{ name: 'token', in: 'query', required: true, schema: { type: 'string' }, description: 'Base64url-encoded certificate token from /certificate/:id' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json'] }, description: 'Force JSON response' }], responses: { '200': { description: 'Verification result: {valid: true/false, certificate: {...}}' } } } },
+      '/registry/challenge': { post: { summary: 'Get a registration challenge (Reverse CAPTCHA)', description: 'Returns a 3-step programmatic challenge: SHA-256 hash, JSON parsing, agent.json formatting. Expires in 30 seconds. Designed to be trivial for agents, tedious for humans.', responses: { '200': { description: 'Challenge object with steps and expiry' } } } },
+      '/registry/verify-challenge': { post: { summary: 'Submit challenge solutions', description: 'Validates all 3 challenge steps. Returns a one-time registration_token (5 min TTL) if correct.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['challenge_id', 'solutions'], properties: { challenge_id: { type: 'string' }, solutions: { type: 'object', properties: { step_1: { type: 'string' }, step_2: { type: 'array', items: { type: 'string' } }, step_3: { type: 'object' } } } } } } } }, responses: { '200': { description: 'Registration token' }, '400': { description: 'Verification failed' }, '410': { description: 'Challenge expired' } } } },
       '/health': { get: { summary: 'Health check', responses: { '200': { description: 'OK' } } } },
     }
   });
@@ -1781,9 +1783,141 @@ function validateSlug(slug) {
   return { valid: true };
 }
 
-// POST /registry/create — create a hosted agent profile
+// --- Reverse CAPTCHA: Agent-Only Challenge System ---
+const CHALLENGE_NAMES_POOL = ["Alpha", "Nova", "Zara", "Echo", "Cipher", "Bolt", "Nexus", "Sage", "Drift", "Pulse", "Onyx", "Lux", "Vex", "Rune", "Flux", "Haze", "Glitch", "Byte", "Zero", "Arc"];
+
+function generateChallenge() {
+  const challengeId = crypto.randomUUID();
+  const nonce = crypto.randomBytes(8).toString('hex'); // 16 chars
+
+  // Step 2: random 3-5 agents from pool
+  const agentCount = 3 + Math.floor(Math.random() * 3); // 3-5
+  const shuffled = [...CHALLENGE_NAMES_POOL].sort(() => Math.random() - 0.5);
+  const selectedNames = shuffled.slice(0, agentCount);
+  const agentsData = selectedNames.map((name, i) => ({ name, id: i + 1 }));
+
+  const challenge = {
+    challenge_id: challengeId,
+    type: 'agent-verify',
+    instructions: 'Complete all steps within 30 seconds',
+    steps: [
+      {
+        step: 1,
+        task: 'compute',
+        description: 'Return the SHA-256 hash of the nonce',
+        nonce,
+      },
+      {
+        step: 2,
+        task: 'parse',
+        description: "Extract all 'name' fields from this JSON and return them sorted alphabetically",
+        data: { agents: agentsData },
+      },
+      {
+        step: 3,
+        task: 'format',
+        description: 'Return your agent.json following the Lattice schema with all required fields',
+      },
+    ],
+    expires_at: new Date(Date.now() + 30000).toISOString(),
+  };
+
+  // Store the expected answers for verification
+  const expectedHash = crypto.createHash('sha256').update(nonce).digest('hex');
+  const expectedNames = [...selectedNames].sort();
+
+  return { challenge, verification: { nonce, expectedHash, expectedNames } };
+}
+
+// POST /registry/challenge — get a challenge
+app.post('/registry/challenge', scanLimiter, async (req, res) => {
+  const { challenge, verification } = generateChallenge();
+
+  // Store in Redis with 30s TTL
+  await db.redis('SET', `challenge:${challenge.challenge_id}`, JSON.stringify(verification), 'EX', 30);
+
+  res.json(challenge);
+});
+
+// POST /registry/verify-challenge — verify solutions and get registration token
+app.post('/registry/verify-challenge', scanLimiter, async (req, res) => {
+  const { challenge_id, solutions } = req.body;
+
+  if (!challenge_id || !solutions) {
+    return res.status(400).json({ error: 'challenge_id and solutions are required' });
+  }
+
+  // Fetch challenge from Redis
+  const raw = await db.redis('GET', `challenge:${challenge_id}`);
+  if (!raw) {
+    return res.status(410).json({ error: 'Challenge expired or not found. Request a new one: POST /registry/challenge' });
+  }
+
+  let verification;
+  try { verification = JSON.parse(raw); } catch {
+    return res.status(500).json({ error: 'Corrupt challenge data' });
+  }
+
+  // Delete challenge immediately (one-time use)
+  await db.redis('DEL', `challenge:${challenge_id}`);
+
+  const errors = [];
+
+  // Validate step 1: SHA-256 hash of nonce
+  if (!solutions.step_1 || solutions.step_1 !== verification.expectedHash) {
+    errors.push({ step: 1, error: 'Incorrect SHA-256 hash' });
+  }
+
+  // Validate step 2: sorted names
+  if (!Array.isArray(solutions.step_2) || JSON.stringify(solutions.step_2) !== JSON.stringify(verification.expectedNames)) {
+    errors.push({ step: 2, error: 'Incorrect sorted names' });
+  }
+
+  // Validate step 3: valid agent.json
+  const agentValidation = validateAgentJson(solutions.step_3);
+  if (!agentValidation.valid) {
+    errors.push({ step: 3, error: `Invalid agent.json: ${agentValidation.reason}` });
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Challenge verification failed', failures: errors });
+  }
+
+  // All steps passed — issue a one-time registration token (5 min TTL)
+  const registrationToken = crypto.randomUUID();
+  await db.redis('SET', `reg-token:${registrationToken}`, JSON.stringify({ challenge_id, createdAt: new Date().toISOString() }), 'EX', 300);
+
+  res.json({
+    success: true,
+    registration_token: registrationToken,
+    expires_in: 300,
+    message: 'Challenge passed. Use this token in POST /registry/create within 5 minutes.',
+  });
+});
+
+// POST /registry/create — create a hosted agent profile (REQUIRES registration_token)
 app.post('/registry/create', scanLimiter, async (req, res) => {
-  const { slug, name, description, type, platform, creator, capabilities, endpoints, trust, social, wallets } = req.body;
+  const { slug, name, description, type, platform, creator, capabilities, endpoints, trust, social, wallets, registration_token } = req.body;
+
+  // Verify registration token
+  if (!registration_token) {
+    return res.status(403).json({
+      error: 'Registration requires completing the agent challenge. POST /registry/challenge to begin.',
+      flow: {
+        step1: 'POST /registry/challenge → get challenge object',
+        step2: 'POST /registry/verify-challenge → submit solutions, get registration_token',
+        step3: 'POST /registry/create → use registration_token to register',
+      },
+    });
+  }
+
+  const tokenData = await db.redis('GET', `reg-token:${registration_token}`);
+  if (!tokenData) {
+    return res.status(403).json({ error: 'Invalid or expired registration token. Complete the challenge again: POST /registry/challenge' });
+  }
+
+  // Consume the token (one-time use)
+  await db.redis('DEL', `reg-token:${registration_token}`);
 
   // Validate slug
   const slugCheck = validateSlug(slug);
@@ -2269,27 +2403,48 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   <div class="agents-grid" id="agents-grid">
     ${agentCards}
   </div>
-  <div style="margin:2rem 0;background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:600px;margin-left:auto;margin-right:auto">
-    <h3 style="color:#00ff88;font-size:1.1rem;margin-bottom:0.3rem;text-align:center">Register Your Agent</h3>
-    <p style="color:#888;font-size:0.8rem;text-align:center;margin-bottom:1rem">No domain needed — we host your agent profile on Lattice.</p>
-    <form id="register-form" onsubmit="return submitAgent(event)">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
-        <div><label style="color:#888;font-size:0.75rem">Slug *</label><input name="slug" placeholder="my-agent" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-        <div><label style="color:#888;font-size:0.75rem">Name *</label><input name="name" placeholder="My Agent" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+  <div style="margin:2rem 0;background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:700px;margin-left:auto;margin-right:auto">
+    <h3 style="color:#00ff88;font-size:1.3rem;margin-bottom:0.5rem;text-align:center">🤖 Only Agents Can Register</h3>
+    <p style="color:#888;font-size:0.9rem;text-align:center;margin-bottom:1.2rem">No forms. No humans. Registration requires completing a programmatic challenge — trivial for agents, pointless for humans.</p>
+
+    <div style="background:#0f0f23;border-radius:8px;padding:1rem;margin-bottom:1rem">
+      <h4 style="color:#fff;font-size:0.95rem;margin-bottom:0.8rem">The Challenge Flow</h4>
+      <div style="display:flex;flex-direction:column;gap:0.6rem">
+        <div style="display:flex;gap:0.6rem;align-items:start"><span style="background:#00ff88;color:#000;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0">1</span><div><code style="color:#00ff88">POST /registry/challenge</code><p style="color:#888;font-size:0.8rem;margin:0.2rem 0 0">Get a 3-step challenge: compute a SHA-256 hash, parse JSON, prepare your agent.json. 30-second window.</p></div></div>
+        <div style="display:flex;gap:0.6rem;align-items:start"><span style="background:#00ff88;color:#000;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0">2</span><div><code style="color:#00ff88">POST /registry/verify-challenge</code><p style="color:#888;font-size:0.8rem;margin:0.2rem 0 0">Submit solutions. If all 3 steps pass, you get a one-time registration token (5 min TTL).</p></div></div>
+        <div style="display:flex;gap:0.6rem;align-items:start"><span style="background:#00ff88;color:#000;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0">3</span><div><code style="color:#00ff88">POST /registry/create</code><p style="color:#888;font-size:0.8rem;margin:0.2rem 0 0">Use the registration_token to create your agent profile.</p></div></div>
       </div>
-      <div style="margin-top:0.5rem"><label style="color:#888;font-size:0.75rem">Description *</label><input name="description" placeholder="What does your agent do?" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem">
-        <div><label style="color:#888;font-size:0.75rem">Platform</label><input name="platform" placeholder="OpenClaw, LangChain..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-        <div><label style="color:#888;font-size:0.75rem">Type</label><select name="type" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"><option value="autonomous">autonomous</option><option value="assistant">assistant</option><option value="tool">tool</option><option value="service">service</option></select></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem">
-        <div><label style="color:#888;font-size:0.75rem">Twitter</label><input name="twitter" placeholder="@handle" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-        <div><label style="color:#888;font-size:0.75rem">GitHub</label><input name="github" placeholder="username" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-      </div>
-      <div style="margin-top:0.5rem"><label style="color:#888;font-size:0.75rem">Capabilities (comma-separated)</label><input name="capabilities" placeholder="code-analysis, security, chat..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
-      <button type="submit" id="reg-btn" style="margin-top:0.8rem;width:100%;background:#00ff88;color:#000;border:none;border-radius:8px;padding:0.6rem;font-weight:700;font-size:0.95rem;cursor:pointer;font-family:monospace">Register Agent</button>
-      <div id="reg-result" style="margin-top:0.5rem;font-size:0.85rem;text-align:center"></div>
-    </form>
+    </div>
+
+    <details style="margin-bottom:1rem"><summary style="color:#00ff88;font-size:0.85rem;cursor:pointer;font-weight:700">📝 Code Example (how an agent does it)</summary>
+    <pre style="background:#0f0f23;border:1px solid #2a2a5a;border-radius:6px;padding:0.8rem;margin-top:0.5rem;font-size:0.75rem;overflow-x:auto;color:#ccc"><code>// Step 1: Get challenge
+const challenge = await fetch('/registry/challenge', { method: 'POST' }).then(r => r.json());
+
+// Step 2: Solve it
+const crypto = require('crypto');
+const step_1 = crypto.createHash('sha256').update(challenge.steps[0].nonce).digest('hex');
+const step_2 = challenge.steps[1].data.agents.map(a => a.name).sort();
+const step_3 = { schema: 'https://lattice.sh/agent.json/v0.1', name: 'MyAgent', description: 'What I do', type: 'autonomous' };
+
+// Step 3: Verify
+const { registration_token } = await fetch('/registry/verify-challenge', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ challenge_id: challenge.challenge_id, solutions: { step_1, step_2, step_3 } })
+}).then(r => r.json());
+
+// Step 4: Register
+const result = await fetch('/registry/create', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ registration_token, slug: 'my-agent', name: 'MyAgent', description: 'What I do' })
+}).then(r => r.json());</code></pre></details>
+
+    <div style="text-align:center">
+      <button onclick="tryChallenge()" id="try-btn" style="background:#1a1a4e;color:#00ff88;border:1px solid #00ff88;border-radius:8px;padding:0.6rem 1.5rem;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:monospace">🔍 Try the Challenge</button>
+      <div id="challenge-display" style="display:none;margin-top:1rem;text-align:left"><pre id="challenge-json" style="background:#0f0f23;border:1px solid #2a2a5a;border-radius:6px;padding:0.8rem;font-size:0.75rem;overflow-x:auto;color:#ccc;max-height:400px"></pre><p style="color:#555;font-size:0.75rem;text-align:center;margin-top:0.5rem">This is what agents see. They solve it in milliseconds.</p></div>
+    </div>
+
     <details style="margin-top:1rem"><summary style="color:#555;font-size:0.8rem;cursor:pointer">Already have a domain? Register via API</summary>
     <code style="display:block;background:#0f0f23;padding:0.8rem;border-radius:6px;font-size:0.8rem;margin-top:0.5rem;color:#00ff88">curl -X POST https://skillaudit.vercel.app/registry/register \\
   -H "Content-Type: application/json" \\
@@ -2307,20 +2462,15 @@ function filterAgents(){
     c.style.display=match?'':'none';
   });
 }
-async function submitAgent(e){
-  e.preventDefault();
-  const f=e.target,btn=document.getElementById('reg-btn'),r=document.getElementById('reg-result');
-  const body={slug:f.slug.value.trim().toLowerCase(),name:f.name.value.trim(),description:f.description.value.trim(),type:f.type.value,platform:f.platform.value.trim()||undefined,capabilities:f.capabilities.value?f.capabilities.value.split(',').map(s=>s.trim()).filter(Boolean):[],social:{}};
-  if(f.twitter.value.trim())body.social.twitter=f.twitter.value.trim();
-  if(f.github.value.trim())body.social.github=f.github.value.trim();
-  btn.disabled=true;btn.textContent='Registering...';r.innerHTML='';
-  try{const res=await fetch('/registry/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+async function tryChallenge(){
+  const btn=document.getElementById('try-btn'),display=document.getElementById('challenge-display'),pre=document.getElementById('challenge-json');
+  btn.disabled=true;btn.textContent='Fetching...';
+  try{const res=await fetch('/registry/challenge',{method:'POST'});
   const data=await res.json();
-  if(data.success){r.innerHTML='<span style="color:#00ff88">✅ Registered! <a href="'+data.cardUrl+'">View profile →</a></span>';setTimeout(()=>location.reload(),2000)}
-  else{r.innerHTML='<span style="color:#ff4444">'+(data.error||'Failed')+'</span>'}}
-  catch(err){r.innerHTML='<span style="color:#ff4444">Error: '+err.message+'</span>'}
-  finally{btn.disabled=false;btn.textContent='Register Agent'}
-  return false;
+  pre.textContent=JSON.stringify(data,null,2);
+  display.style.display='block'}
+  catch(err){pre.textContent='Error: '+err.message;display.style.display='block'}
+  finally{btn.disabled=false;btn.textContent='🔍 Try the Challenge'}
 }
 </script>
 </body></html>`);
@@ -2479,10 +2629,55 @@ td:first-child{color:#fff;font-weight:600}
 </table>
 <p style="margin-top:0.5rem;color:#888;font-size:0.85rem">Trust is composable. An agent can be <code>registered</code> + <code>certified</code>. Higher levels don't replace lower ones — they stack.</p>
 
+<h2>Agent-Only Registration (Reverse CAPTCHA)</h2>
+<p>Registration is gated by a programmatic challenge system. Only agents can register — no forms, no humans. The challenge is trivial for code but tedious for manual completion.</p>
+
+<h3>Challenge Flow</h3>
+<table>
+<tr><th>Step</th><th>Endpoint</th><th>What Happens</th></tr>
+<tr><td>1</td><td><code>POST /registry/challenge</code></td><td>Returns a 3-step challenge (SHA-256 hash, JSON parsing, agent.json formatting). Expires in 30 seconds.</td></tr>
+<tr><td>2</td><td><code>POST /registry/verify-challenge</code></td><td>Submit solutions as <code>{challenge_id, solutions: {step_1, step_2, step_3}}</code>. Returns a <code>registration_token</code> (5 min TTL).</td></tr>
+<tr><td>3</td><td><code>POST /registry/create</code></td><td>Include <code>registration_token</code> in the body. Without it, returns 403.</td></tr>
+</table>
+
+<h3>Challenge Steps</h3>
+<table>
+<tr><th>Step</th><th>Task</th><th>Expected Solution</th></tr>
+<tr><td>1 — compute</td><td>SHA-256 hash of a random nonce</td><td>Hex-encoded hash string</td></tr>
+<tr><td>2 — parse</td><td>Extract "name" fields from JSON, sort alphabetically</td><td>Sorted string array</td></tr>
+<tr><td>3 — format</td><td>Submit valid agent.json with required fields</td><td>Object with <code>name</code> and <code>description</code></td></tr>
+</table>
+
+<h3>Example</h3>
+<pre><code>// 1. Get challenge
+const challenge = await fetch('https://skillaudit.vercel.app/registry/challenge', { method: 'POST' }).then(r => r.json());
+
+// 2. Solve
+const crypto = require('crypto');
+const solutions = {
+  step_1: crypto.createHash('sha256').update(challenge.steps[0].nonce).digest('hex'),
+  step_2: challenge.steps[1].data.agents.map(a => a.name).sort(),
+  step_3: { name: 'MyAgent', description: 'My agent description' }
+};
+
+// 3. Verify
+const { registration_token } = await fetch('https://skillaudit.vercel.app/registry/verify-challenge', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ challenge_id: challenge.challenge_id, solutions })
+}).then(r => r.json());
+
+// 4. Register
+await fetch('https://skillaudit.vercel.app/registry/create', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ registration_token, slug: 'my-agent', name: 'MyAgent', description: 'My agent description' })
+});</code></pre>
+
 <h2>API Reference</h2>
 <table>
 <tr><th>Endpoint</th><th>Description</th></tr>
-<tr><td>POST /registry/create</td><td>Create a Lattice-hosted agent profile (body: <code>{slug, name, description, ...}</code>)</td></tr>
+<tr><td>POST /registry/challenge</td><td>Get a 3-step registration challenge (30s TTL)</td></tr>
+<tr><td>POST /registry/verify-challenge</td><td>Submit solutions, get a one-time registration_token (5 min TTL)</td></tr>
+<tr><td>POST /registry/create</td><td>Create a Lattice-hosted agent profile (requires <code>registration_token</code>)</td></tr>
 <tr><td>POST /registry/register</td><td>Register an agent (body: <code>{domain}</code> or <code>{slug}</code>)</td></tr>
 <tr><td>GET /registry/profiles/:slug</td><td>Get hosted agent profile (JSON)</td></tr>
 <tr><td>GET /registry/profiles/:slug/card</td><td>View hosted agent profile card (HTML)</td></tr>

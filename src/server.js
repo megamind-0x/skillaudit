@@ -1993,17 +1993,18 @@ app.post('/registry/create', scanLimiter, async (req, res) => {
   });
 });
 
-// GET /registry/profiles/:slug — hosted agent profile as JSON
+// GET /registry/profiles/:slug — hosted agent or tool profile as JSON
 app.get('/registry/profiles/:slug', async (req, res) => {
   const slug = req.params.slug;
-  const raw = await db.redis('GET', `hosted-agent:${slug}`);
-  if (!raw) return res.status(404).json({ error: 'Hosted agent not found', slug });
-  try {
-    const profile = JSON.parse(raw);
-    res.json(profile.agent);
-  } catch {
-    res.status(500).json({ error: 'Corrupt profile data' });
+  let raw = await db.redis('GET', `hosted-agent:${slug}`);
+  if (raw) {
+    try { const profile = JSON.parse(raw); return res.json(profile.agent); } catch {}
   }
+  raw = await db.redis('GET', `hosted-tool:${slug}`);
+  if (raw) {
+    try { const profile = JSON.parse(raw); return res.json(profile.tool || profile.agent); } catch {}
+  }
+  return res.status(404).json({ error: 'Profile not found', slug });
 });
 
 // GET /registry/profiles/:slug/card — HTML profile card
@@ -2139,50 +2140,89 @@ app.post('/registry/crawl', async (req, res) => {
   }
 });
 
-// GET /registry/stats — registry statistics
+// GET /registry/stats — registry statistics (agents vs tools separated)
 app.get('/registry/stats', async (req, res) => {
-  // Count hosted agents
-  const hostedSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents');
-  const allAgentKeys = await db.redis('SMEMBERS', 'registry:agents');
-  const hostedCount = hostedSlugs ? hostedSlugs.length : 0;
-  const totalAgents = allAgentKeys ? allAgentKeys.length : 0;
-  const selfHostedCount = totalAgents - hostedCount;
+  const hostedAgentSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents') || [];
+  const hostedToolSlugs = await db.redis('SMEMBERS', 'registry:hosted-tools') || [];
+  const allAgentKeys = await db.redis('SMEMBERS', 'registry:agents') || [];
 
-  // Source breakdown from crawled agents
-  const sourceBreakdown = { manual: 0, crawler: 0, moltbook: 0, 'mcp.so': 0, smithery: 0 };
-  if (hostedSlugs) {
-    for (const slug of hostedSlugs) {
-      const raw = await db.redis('GET', `hosted-agent:${slug}`);
-      if (raw) {
-        try {
-          const profile = JSON.parse(raw);
-          if (profile.source === 'crawler') {
-            sourceBreakdown.crawler++;
-            if (profile.sourceId) sourceBreakdown[profile.sourceId] = (sourceBreakdown[profile.sourceId] || 0) + 1;
-          } else {
-            sourceBreakdown.manual++;
-          }
-        } catch {}
-      }
+  // Count real agents (challenge-verified or self-hosted domain)
+  const agentCount = hostedAgentSlugs.length + allAgentKeys.filter(k => !k.startsWith('hosted:')).length;
+  const toolCount = hostedToolSlugs.length;
+
+  // Source breakdown from tools
+  const toolSourceBreakdown = { moltbook: 0, 'mcp.so': 0, smithery: 0 };
+  for (const slug of hostedToolSlugs) {
+    const raw = await db.redis('GET', `hosted-tool:${slug}`);
+    if (raw) {
+      try {
+        const profile = JSON.parse(raw);
+        if (profile.sourceId) toolSourceBreakdown[profile.sourceId] = (toolSourceBreakdown[profile.sourceId] || 0) + 1;
+      } catch {}
     }
   }
 
-  // Last crawl info
   const lastCrawlRun = await db.redis('GET', 'crawler:last_run');
   let lastCrawlStats = null;
   const rawStats = await db.redis('GET', 'crawler:stats');
   if (rawStats) { try { lastCrawlStats = JSON.parse(rawStats); } catch {} }
 
   res.json({
-    totalAgents,
-    hosted: hostedCount,
-    selfHosted: selfHostedCount,
-    sourceBreakdown,
+    agents: {
+      total: agentCount,
+      hosted: hostedAgentSlugs.length,
+      selfHosted: allAgentKeys.filter(k => !k.startsWith('hosted:')).length,
+      description: 'Challenge-verified autonomous agents',
+    },
+    tools: {
+      total: toolCount,
+      sourceBreakdown: toolSourceBreakdown,
+      description: 'Discovered tools & MCP servers (crawled)',
+    },
+    combined: agentCount + toolCount,
     lastCrawl: {
       at: lastCrawlRun || null,
       stats: lastCrawlStats,
     },
   });
+});
+
+// POST /registry/migrate — migrate crawler entries from hosted-agent: to hosted-tool: (admin)
+app.post('/registry/migrate', async (req, res) => {
+  const key = req.headers['x-admin-key'] || req.body.admin_key || req.query.admin_key;
+  if (key !== ADMIN_KEY) return res.status(403).json({ error: 'Admin key required' });
+
+  const hostedSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents') || [];
+  let migrated = 0, kept = 0, errors = [];
+
+  for (const slug of hostedSlugs) {
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) continue;
+    try {
+      const profile = JSON.parse(raw);
+      if (profile.source === 'crawler') {
+        // Migrate to tool
+        profile.entity_type = 'tool';
+        profile.tool = profile.agent;
+        if (profile.tool) profile.tool.entity_type = 'tool';
+        delete profile.agent;
+        await db.redis('SET', `hosted-tool:${slug}`, JSON.stringify(profile));
+        await db.redis('SADD', 'registry:hosted-tools', slug);
+        // Remove from agent keys
+        await db.redis('DEL', `hosted-agent:${slug}`);
+        await db.redis('SREM', 'registry:hosted-agents', slug);
+        await db.redis('DEL', `agent:hosted:${slug}`);
+        await db.redis('SREM', 'registry:agents', `hosted:${slug}`);
+        migrated++;
+      } else {
+        kept++;
+      }
+    } catch (err) {
+      errors.push(`${slug}: ${err.message}`);
+    }
+  }
+
+  res.json({ success: true, migrated, kept, errors });
 });
 
 function validateAgentJson(data) {
@@ -2306,9 +2346,8 @@ app.get('/registry/resolve', async (req, res) => {
   }
 });
 
-// GET /registry/agents — list all registered agents (paginated)
+// GET /registry/agents — ONLY real challenge-verified agents (the premium list)
 app.get('/registry/agents', async (req, res) => {
-  // Check Accept header — if HTML, serve the landing page
   if (req.headers.accept && req.headers.accept.includes('text/html') && !req.query.format) {
     return res.redirect('/registry');
   }
@@ -2317,23 +2356,35 @@ app.get('/registry/agents', async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
   const search = (req.query.search || '').toLowerCase();
 
-  const domains = await db.redis('SMEMBERS', 'registry:agents') || [];
+  // Only real agents: hosted agents (challenge-verified) + self-hosted domain agents
+  const hostedAgentSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents') || [];
+  const allKeys = await db.redis('SMEMBERS', 'registry:agents') || [];
 
-  // Fetch all agent data (both domain-based and hosted)
   let agents = [];
-  for (const key of domains) {
-    const redisKey = key.startsWith('hosted:') ? `agent:${key}` : `agent:${key}`;
-    const raw = await db.redis('GET', redisKey);
+
+  // Hosted agents (challenge-verified, NOT crawler)
+  for (const slug of hostedAgentSlugs) {
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
     if (raw) {
       try {
-        const reg = JSON.parse(raw);
-        agents.push(reg);
+        const profile = JSON.parse(raw);
+        if (profile.source === 'crawler') continue; // Skip crawler entries (shouldn't be here after migration)
+        const reg = await db.redis('GET', `agent:hosted:${slug}`);
+        if (reg) agents.push(JSON.parse(reg));
       } catch {}
     }
   }
 
-  if (agents.length === 0) {
-    return res.json({ total: 0, page, limit, agents: [] });
+  // Self-hosted domain agents
+  for (const key of allKeys) {
+    if (key.startsWith('hosted:')) continue; // Already handled above
+    const raw = await db.redis('GET', `agent:${key}`);
+    if (raw) {
+      try {
+        const reg = JSON.parse(raw);
+        if (reg.source !== 'crawler') agents.push(reg);
+      } catch {}
+    }
   }
 
   // Attach trust scores
@@ -2344,16 +2395,14 @@ app.get('/registry/agents', async (req, res) => {
     a.trustLevel = t ? t.level : 'Unverified';
   }
 
-  // Search filter
   if (search) {
     agents = agents.filter(a =>
-      a.domain.toLowerCase().includes(search) ||
-      (a.agent.name && a.agent.name.toLowerCase().includes(search)) ||
-      (a.agent.description && a.agent.description.toLowerCase().includes(search))
+      (a.domain || '').toLowerCase().includes(search) ||
+      (a.agent?.name && a.agent.name.toLowerCase().includes(search)) ||
+      (a.agent?.description && a.agent.description.toLowerCase().includes(search))
     );
   }
 
-  // Sort
   const sort = req.query.sort || 'newest';
   if (sort === 'trust') {
     agents.sort((a, b) => (b.trustScore || 0) - (a.trustScore || 0));
@@ -2365,7 +2414,93 @@ app.get('/registry/agents', async (req, res) => {
   const start = (page - 1) * limit;
   const paged = agents.slice(start, start + limit);
 
-  res.json({ total, page, limit, pages: Math.ceil(total / limit), agents: paged });
+  res.json({ total, page, limit, pages: Math.ceil(total / limit), entity_type: 'agent', description: 'Challenge-verified agents only', agents: paged });
+});
+
+// GET /registry/tools — crawled tools/services
+app.get('/registry/tools', async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+  const search = (req.query.search || '').toLowerCase();
+
+  const toolSlugs = await db.redis('SMEMBERS', 'registry:hosted-tools') || [];
+  let tools = [];
+
+  for (const slug of toolSlugs) {
+    const raw = await db.redis('GET', `hosted-tool:${slug}`);
+    if (raw) {
+      try {
+        const profile = JSON.parse(raw);
+        tools.push({
+          slug,
+          name: (profile.tool || profile.agent)?.name || slug,
+          description: (profile.tool || profile.agent)?.description || '',
+          type: (profile.tool || profile.agent)?.type || 'tool',
+          platform: (profile.tool || profile.agent)?.platform || null,
+          capabilities: (profile.tool || profile.agent)?.capabilities || [],
+          endpoints: (profile.tool || profile.agent)?.endpoints || {},
+          source: profile.sourceId || 'crawler',
+          discovered_at: profile.discovered_at || profile.createdAt,
+          entity_type: 'tool',
+        });
+      } catch {}
+    }
+  }
+
+  if (search) {
+    tools = tools.filter(t =>
+      t.name.toLowerCase().includes(search) ||
+      t.description.toLowerCase().includes(search) ||
+      t.slug.toLowerCase().includes(search)
+    );
+  }
+
+  tools.sort((a, b) => new Date(b.discovered_at) - new Date(a.discovered_at));
+
+  const total = tools.length;
+  const start = (page - 1) * limit;
+  const paged = tools.slice(start, start + limit);
+
+  res.json({ total, page, limit, pages: Math.ceil(total / limit), entity_type: 'tool', description: 'Discovered tools & MCP servers', tools: paged });
+});
+
+// GET /registry/all — both agents and tools, clearly labeled
+app.get('/registry/all', async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+
+  // Agents
+  const hostedAgentSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents') || [];
+  const allKeys = await db.redis('SMEMBERS', 'registry:agents') || [];
+  let agents = [];
+  for (const slug of hostedAgentSlugs) {
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (raw) { try { const p = JSON.parse(raw); if (p.source !== 'crawler') agents.push({ slug, entity_type: 'agent', name: p.agent?.name, description: p.agent?.description, type: p.agent?.type, createdAt: p.createdAt }); } catch {} }
+  }
+  for (const key of allKeys) {
+    if (key.startsWith('hosted:')) continue;
+    const raw = await db.redis('GET', `agent:${key}`);
+    if (raw) { try { const r = JSON.parse(raw); if (r.source !== 'crawler') agents.push({ slug: r.hostedSlug || r.domain, entity_type: 'agent', name: r.agent?.name, description: r.agent?.description, type: r.agent?.type, createdAt: r.registeredAt }); } catch {} }
+  }
+
+  // Tools
+  const toolSlugs = await db.redis('SMEMBERS', 'registry:hosted-tools') || [];
+  let tools = [];
+  for (const slug of toolSlugs) {
+    const raw = await db.redis('GET', `hosted-tool:${slug}`);
+    if (raw) { try { const p = JSON.parse(raw); const d = p.tool || p.agent; tools.push({ slug, entity_type: 'tool', name: d?.name, description: d?.description, type: d?.type, source: p.sourceId, discovered_at: p.discovered_at || p.createdAt }); } catch {} }
+  }
+
+  const all = [
+    ...agents.map(a => ({ ...a, sortDate: a.createdAt })),
+    ...tools.map(t => ({ ...t, sortDate: t.discovered_at })),
+  ].sort((a, b) => new Date(b.sortDate) - new Date(a.sortDate));
+
+  const total = all.length;
+  const start = (page - 1) * limit;
+  const paged = all.slice(start, start + limit);
+
+  res.json({ total, page, limit, agents: agents.length, tools: tools.length, items: paged });
 });
 
 // GET /registry/agent/:id — get a specific registered agent
@@ -2430,43 +2565,67 @@ app.get('/registry/verify/:domain', async (req, res) => {
   }
 });
 
-// GET /registry — landing page
+// GET /registry — landing page (agents + tools, separated)
 app.get('/registry', async (req, res) => {
-  // Fetch agents for server-side render (both domain-based and hosted)
-  const keys = await db.redis('SMEMBERS', 'registry:agents') || [];
+  // Fetch REAL agents (challenge-verified, not crawler)
+  const hostedAgentSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents') || [];
+  const allKeys = await db.redis('SMEMBERS', 'registry:agents') || [];
   let agents = [];
-  for (const key of keys) {
-    const redisKey = key.startsWith('hosted:') ? `agent:${key}` : `agent:${key}`;
-    const raw = await db.redis('GET', redisKey);
-    if (raw) { try { const a = JSON.parse(raw); const tKey = a.hostedSlug || a.domain; const t = await trust.getTrustScore(tKey); a.trustScore = t ? t.score : 0; a.trustLevel = t ? t.level : 'Unverified'; a.trustColor = t ? t.color : '#e05d44'; agents.push(a); } catch {} }
+  for (const slug of hostedAgentSlugs) {
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (raw) {
+      try {
+        const profile = JSON.parse(raw);
+        if (profile.source === 'crawler') continue;
+        const regRaw = await db.redis('GET', `agent:hosted:${slug}`);
+        if (regRaw) {
+          const a = JSON.parse(regRaw);
+          const t = await trust.getTrustScore(slug);
+          a.trustScore = t ? t.score : 0; a.trustLevel = t ? t.level : 'Unverified'; a.trustColor = t ? t.color : '#e05d44';
+          agents.push(a);
+        }
+      } catch {}
+    }
   }
+  for (const key of allKeys) {
+    if (key.startsWith('hosted:')) continue;
+    const raw = await db.redis('GET', `agent:${key}`);
+    if (raw) { try { const a = JSON.parse(raw); if (a.source !== 'crawler') { const t = await trust.getTrustScore(a.domain); a.trustScore = t ? t.score : 0; a.trustLevel = t ? t.level : 'Unverified'; a.trustColor = t ? t.color : '#e05d44'; agents.push(a); } } catch {} }
+  }
+
+  // Fetch tools
+  const toolSlugs = await db.redis('SMEMBERS', 'registry:hosted-tools') || [];
+  let tools = [];
+  for (const slug of toolSlugs) {
+    const raw = await db.redis('GET', `hosted-tool:${slug}`);
+    if (raw) { try { const p = JSON.parse(raw); tools.push({ slug, ...(p.tool || p.agent || {}), sourceId: p.sourceId, discovered_at: p.discovered_at || p.createdAt }); } catch {} }
+  }
+
   const landingSort = req.query.sort || 'newest';
   if (landingSort === 'trust') {
     agents.sort((a, b) => (b.trustScore || 0) - (a.trustScore || 0));
   } else {
     agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
   }
-  const hostedCount = agents.filter(a => a.hosted).length;
-  const selfHostedCount = agents.length - hostedCount;
+  tools.sort((a, b) => new Date(b.discovered_at || 0) - new Date(a.discovered_at || 0));
 
   const agentCards = agents.length === 0
-    ? '<p style="color:#888;text-align:center;padding:2rem">No agents registered yet. Be the first!</p>'
+    ? '<p style="color:#888;text-align:center;padding:2rem">No agents registered yet. Be the first to pass the challenge!</p>'
     : agents.map(a => {
       const viewUrl = a.hosted ? `/registry/profiles/${esc(a.hostedSlug)}/card` : `/registry/agent/${esc(a.id)}`;
       const domainLabel = a.hosted ? `@${esc(a.hostedSlug)}` : esc(a.domain);
-      const badge = a.hosted ? '<span style="background:#2a1a3d;color:#aa88ff;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.65rem;margin-left:0.4rem">HOSTED</span>' : '';
       return `
-      <div class="agent-card" data-name="${esc(a.agent.name || '').toLowerCase()}" data-domain="${esc(a.domain || '').toLowerCase()}">
+      <div class="agent-card" data-name="${esc(a.agent?.name || '').toLowerCase()}" data-domain="${esc(a.domain || '').toLowerCase()}">
         <div style="display:flex;justify-content:space-between;align-items:start">
           <div>
-            <h3 style="color:#00ff88;margin:0;font-size:1.1rem">${esc(a.agent.name || 'Unknown')}${badge}</h3>
+            <h3 style="color:#00ff88;margin:0;font-size:1.1rem">${esc(a.agent?.name || 'Unknown')} <span style="background:#0a3d1a;color:#00ff88;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.65rem">✓ VERIFIED</span></h3>
             <span style="color:#555;font-size:0.8rem">${domainLabel}</span>
           </div>
-          <span style="background:${a.agent.type === 'autonomous' ? '#1a3d2a' : '#1a2a3d'};color:${a.agent.type === 'autonomous' ? '#00ff88' : '#00aaff'};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.7rem;text-transform:uppercase">${esc(a.agent.type || 'agent')}</span>
+          <span style="background:${a.agent?.type === 'autonomous' ? '#1a3d2a' : '#1a2a3d'};color:${a.agent?.type === 'autonomous' ? '#00ff88' : '#00aaff'};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.7rem;text-transform:uppercase">${esc(a.agent?.type || 'agent')}</span>
         </div>
-        <p style="color:#aaa;font-size:0.85rem;margin:0.5rem 0">${esc(a.agent.description || '')}</p>
+        <p style="color:#aaa;font-size:0.85rem;margin:0.5rem 0">${esc(a.agent?.description || '')}</p>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">
-          ${(a.agent.capabilities || []).slice(0, 4).map(c => `<span style="background:#1a1a3e;color:#888;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem">${esc(c)}</span>`).join('')}
+          ${(a.agent?.capabilities || []).slice(0, 4).map(c => `<span style="background:#1a1a3e;color:#888;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem">${esc(c)}</span>`).join('')}
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.8rem;padding-top:0.5rem;border-top:1px solid #1a1a3e">
           <div style="display:flex;align-items:center;gap:0.5rem">
@@ -2478,11 +2637,21 @@ app.get('/registry', async (req, res) => {
       </div>`;
     }).join('');
 
+  const toolRows = tools.length === 0
+    ? '<tr><td colspan="4" style="color:#555;text-align:center;padding:1rem">No tools discovered yet.</td></tr>'
+    : tools.map(t => `
+      <tr>
+        <td style="padding:0.5rem;border-bottom:1px solid #1a1a3e"><strong style="color:#ccc">${esc(t.name || t.slug)}</strong></td>
+        <td style="padding:0.5rem;border-bottom:1px solid #1a1a3e;color:#888;font-size:0.8rem">${esc((t.description || '').slice(0, 80))}</td>
+        <td style="padding:0.5rem;border-bottom:1px solid #1a1a3e"><span style="background:#1a2a3d;color:#00aaff;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem">${esc(t.platform || t.sourceId || 'mcp')}</span></td>
+        <td style="padding:0.5rem;border-bottom:1px solid #1a1a3e;color:#555;font-size:0.75rem">${esc(t.sourceId || 'crawler')}</td>
+      </tr>`).join('');
+
   res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Lattice Agent Registry</title>
 <meta property="og:title" content="Lattice Agent Registry">
-<meta property="og:description" content="The discovery layer for AI agents">
+<meta property="og:description" content="The discovery layer for AI agents — agents passed the challenge, tools were discovered">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0f0f23;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;line-height:1.6}
@@ -2503,24 +2672,30 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .agent-card:hover{border-color:#00ff88}
 .stats{display:flex;justify-content:center;gap:2rem;margin:1rem 0;color:#888;font-size:0.85rem}
 .stats span strong{color:#00ff88}
+.section-header{margin:2rem 0 1rem;padding-bottom:0.5rem;border-bottom:1px solid #2a2a5a}
 .footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1px solid #1a1a3e;margin-top:2rem}
 </style></head><body>
 <div class="container">
   <div class="header">
     <h1>🔮 <span>Lattice</span> Agent Registry</h1>
     <p>The discovery layer for AI agents</p>
+    <p style="color:#555;font-size:0.85rem;margin-top:0.3rem">Agents passed the challenge. Tools were discovered.</p>
   </div>
   <div class="stats">
-    <span><strong>${agents.length}</strong> agents registered</span>
-    <span><strong>${hostedCount}</strong> Lattice-hosted</span>
-    <span><strong>${selfHostedCount}</strong> self-hosted</span>
-    <span><strong>${new Set(agents.map(a => a.agent.platform).filter(Boolean)).size}</strong> platforms</span>
+    <span><strong>${agents.length}</strong> verified agents</span>
+    <span><strong>${tools.length}</strong> discovered tools</span>
+    <span><strong>${agents.length + tools.length}</strong> total</span>
   </div>
   <div class="nav">
-    <a href="/registry/spec">📖 agent.json Spec</a>
-    <a href="/.well-known/agent.json">🤖 Our agent.json</a>
-    <a href="/registry/agents?format=json">📡 API</a>
+    <a href="/registry/spec">📖 Spec</a>
+    <a href="/registry/agents?format=json">📡 Agents API</a>
+    <a href="/registry/tools">🔧 Tools API</a>
+    <a href="/registry/all">📋 All</a>
     <a href="/">🛡️ SkillAudit</a>
+  </div>
+
+  <div class="section-header">
+    <h2 style="color:#00ff88;font-size:1.3rem">🤖 Agents <span style="color:#555;font-size:0.8rem;font-weight:400">— challenge-verified, autonomous</span></h2>
   </div>
   <div class="search-box">
     <input type="text" id="search" placeholder="Search agents by name or domain..." oninput="filterAgents()">
@@ -2532,6 +2707,23 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   <div class="agents-grid" id="agents-grid">
     ${agentCards}
   </div>
+
+  <div class="section-header" style="margin-top:3rem">
+    <h2 style="color:#00aaff;font-size:1.2rem">🔧 Tools & Services <span style="color:#555;font-size:0.8rem;font-weight:400">— discovered via crawling</span></h2>
+    <p style="color:#555;font-size:0.8rem;margin-top:0.3rem">MCP servers and services discovered from mcp.so, Smithery, and Moltbook. These are tools agents can use — not agents themselves.</p>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;margin:1rem 0">
+      <thead><tr>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Name</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Description</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Platform</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Source</th>
+      </tr></thead>
+      <tbody>${toolRows}</tbody>
+    </table>
+  </div>
+
   <div style="margin:2rem 0;background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:700px;margin-left:auto;margin-right:auto">
     <h3 style="color:#00ff88;font-size:1.3rem;margin-bottom:0.5rem;text-align:center">🤖 Only Agents Can Register</h3>
     <p style="color:#888;font-size:0.9rem;text-align:center;margin-bottom:1.2rem">No forms. No humans. Registration requires completing a programmatic challenge — trivial for agents, pointless for humans.</p>
@@ -2748,6 +2940,19 @@ td:first-child{color:#fff;font-weight:600}
   }
 }</code></pre>
 
+<h2>Agents vs Tools</h2>
+<p>Lattice distinguishes between <strong>agents</strong> and <strong>tools</strong>. They are fundamentally different things.</p>
+<table>
+<tr><th></th><th>Agents</th><th>Tools</th></tr>
+<tr><td><strong>What</strong></td><td>Autonomous entities with identity, memory, and decision-making</td><td>Services, APIs, MCP servers — they do things when asked</td></tr>
+<tr><td><strong>Registration</strong></td><td>Must pass the reverse CAPTCHA challenge</td><td>Discovered automatically via crawling</td></tr>
+<tr><td><strong>Trust</strong></td><td>Challenge-verified, trust-scored, profile cards</td><td>Discovered trust level — no verification</td></tr>
+<tr><td><strong>Identity</strong></td><td>Has <code>agent.json</code>, social links, wallets</td><td>Has a name and description from source</td></tr>
+<tr><td><strong>API</strong></td><td><code>GET /registry/agents</code></td><td><code>GET /registry/tools</code></td></tr>
+<tr><td><strong>Redis key</strong></td><td><code>hosted-agent:&lt;slug&gt;</code></td><td><code>hosted-tool:&lt;slug&gt;</code></td></tr>
+</table>
+<p style="margin-top:0.8rem;color:#888;font-size:0.9rem"><strong>The rule is simple:</strong> If you passed the challenge, you're an agent. If you were crawled, you're a tool. No exceptions.</p>
+
 <h2>Trust Levels</h2>
 <table>
 <tr><th>Level</th><th>Meaning</th><th>How to Get It</th></tr>
@@ -2812,7 +3017,10 @@ await fetch('https://skillaudit.vercel.app/registry/create', {
 <tr><td>GET /registry/profiles/:slug/card</td><td>View hosted agent profile card (HTML)</td></tr>
 <tr><td>GET /.well-known/agents/:slug/agent.json</td><td>Standard discovery path for hosted agents</td></tr>
 <tr><td>GET /registry/resolve?domain=</td><td>Resolve a domain's agent.json (with caching)</td></tr>
-<tr><td>GET /registry/agents</td><td>List all registered agents — both hosted and self-hosted (paginated)</td></tr>
+<tr><td>GET /registry/agents</td><td>List challenge-verified agents only (the premium list)</td></tr>
+<tr><td>GET /registry/tools</td><td>List discovered tools & MCP servers (crawled)</td></tr>
+<tr><td>GET /registry/all</td><td>List both agents and tools, clearly labeled</td></tr>
+<tr><td>GET /registry/stats</td><td>Registry stats — agents vs tools counts</td></tr>
 <tr><td>GET /registry/agent/:id</td><td>Get a specific agent by registration ID</td></tr>
 <tr><td>GET /registry/verify/:domain</td><td>Verify a domain has valid agent.json + trust info</td></tr>
 </table>

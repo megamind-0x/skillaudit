@@ -52,29 +52,32 @@ function slugify(name) {
     .slice(0, 60);
 }
 
-// --- Check if agent already exists ---
-async function agentExists(slug) {
-  const hosted = await db.redis('GET', `hosted-agent:${slug}`);
-  if (hosted) {
+// --- Check if tool already exists ---
+async function toolExists(slug) {
+  // Check both tool and agent keys (don't overwrite real agents)
+  const hostedAgent = await db.redis('GET', `hosted-agent:${slug}`);
+  if (hostedAgent) return true; // Real agent exists with this slug, skip
+  const hostedTool = await db.redis('GET', `hosted-tool:${slug}`);
+  if (hostedTool) {
     try {
-      const data = JSON.parse(hosted);
-      // Don't overwrite manually registered agents
-      if (!data.source || data.source !== 'crawler') return true;
+      const data = JSON.parse(hostedTool);
+      if (data.source === 'crawler') return true; // Already crawled
     } catch {}
     return true;
   }
   return false;
 }
 
-// --- Register a crawled agent ---
-async function registerCrawledAgent({ slug, name, description, type, platform, capabilities, url, sourceId }) {
-  if (await agentExists(slug)) return false;
+// --- Register a crawled tool (NOT an agent) ---
+async function registerCrawledTool({ slug, name, description, type, platform, capabilities, url, sourceId }) {
+  if (await toolExists(slug)) return false;
 
-  const agentData = {
+  const toolData = {
     schema: 'https://lattice.sh/agent.json/v0.1',
     name,
     description: (description || '').slice(0, 500) || `${name} — discovered by Lattice crawler`,
     type: type || 'tool',
+    entity_type: 'tool',
     platform: platform || null,
     creator: null,
     capabilities: capabilities || [],
@@ -86,7 +89,8 @@ async function registerCrawledAgent({ slug, name, description, type, platform, c
 
   const profile = {
     slug,
-    agent: agentData,
+    tool: toolData,
+    entity_type: 'tool',
     hostedBy: 'lattice',
     source: 'crawler',
     sourceId,
@@ -95,24 +99,8 @@ async function registerCrawledAgent({ slug, name, description, type, platform, c
     updatedAt: new Date().toISOString(),
   };
 
-  await db.redis('SET', `hosted-agent:${slug}`, JSON.stringify(profile));
-  await db.redis('SADD', 'registry:hosted-agents', slug);
-
-  const registration = {
-    id: slug,
-    domain: `skillaudit.vercel.app/registry/profiles/${slug}`,
-    hostedSlug: slug,
-    agentJsonUrl: `https://skillaudit.vercel.app/.well-known/agents/${slug}/agent.json`,
-    agent: agentData,
-    registeredAt: profile.createdAt,
-    lastVerifiedAt: profile.createdAt,
-    verified: false,
-    hosted: true,
-    source: 'crawler',
-    discovered_at: profile.discovered_at,
-  };
-  await db.redis('SET', `agent:hosted:${slug}`, JSON.stringify(registration), 'EX', AGENT_TTL);
-  await db.redis('SADD', 'registry:agents', `hosted:${slug}`);
+  await db.redis('SET', `hosted-tool:${slug}`, JSON.stringify(profile));
+  await db.redis('SADD', 'registry:hosted-tools', slug);
 
   return true;
 }
@@ -419,10 +407,10 @@ async function runCrawl() {
 
   stats.discovered = allAgents.length;
 
-  // Register each discovered agent
+  // Register each discovered tool (NOT agent — crawled entries are tools)
   for (const agent of allAgents) {
     try {
-      const registered = await registerCrawledAgent(agent);
+      const registered = await registerCrawledTool(agent);
       if (registered) {
         stats.registered++;
       } else {

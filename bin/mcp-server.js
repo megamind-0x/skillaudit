@@ -77,6 +77,17 @@ const TOOLS = [
       required: ['urls'],
     },
   },
+  {
+    name: 'skillaudit_npm',
+    description: 'Scan an npm package by name. Fetches README, package.json, entry points, and skill files from the registry and scans them all. Detects suspicious install scripts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        package: { type: 'string', description: 'npm package name (e.g., "@modelcontextprotocol/server-filesystem")' },
+      },
+      required: ['package'],
+    },
+  },
 ];
 
 // --- URL fetching ---
@@ -201,12 +212,87 @@ async function handleBatch({ urls }) {
   return { total: urls.length, successful: successful.length, riskBreakdown, results };
 }
 
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timeout (15s)')), 15000);
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, { headers: { 'User-Agent': 'SkillAudit-MCP/0.8', Accept: 'application/json' }, timeout: 15000 }, (res) => {
+      if (res.statusCode !== 200) { clearTimeout(timeout); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      let data = '';
+      res.on('data', chunk => { data += chunk; if (data.length > 256 * 1024) { res.destroy(); clearTimeout(timeout); reject(new Error('Too large')); } });
+      res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON')); } });
+    }).on('error', e => { clearTimeout(timeout); reject(e); });
+  });
+}
+
+async function handleNpm({ package: pkg }) {
+  if (!pkg) return { error: 'package name is required' };
+  const encodedPkg = pkg.startsWith('@') ? `@${encodeURIComponent(pkg.slice(1))}` : encodeURIComponent(pkg);
+  const meta = await fetchJson(`https://registry.npmjs.org/${encodedPkg}/latest`);
+  if (meta.error) return { error: `Package not found: ${pkg}` };
+  const latest = meta.version;
+  if (!latest) return { error: `No version info for ${pkg}` };
+  const versionMeta = meta;
+
+  const filesToScan = [];
+  try { const rm = await fetchUrl(`https://unpkg.com/${pkg}@${latest}/README.md`); if (rm?.length > 50) filesToScan.push({ name: 'README.md', content: rm }); } catch {}
+  if (meta.readme && meta.readme.length > 50 && !filesToScan.some(f => f.name === 'README.md')) filesToScan.push({ name: 'README.md', content: meta.readme });
+  filesToScan.push({ name: 'package.json', content: JSON.stringify(versionMeta, null, 2) });
+
+  const mainFile = versionMeta.main || 'index.js';
+  const toFetch = [mainFile];
+  if (versionMeta.bin) {
+    const bins = typeof versionMeta.bin === 'string' ? [versionMeta.bin] : Object.values(versionMeta.bin);
+    for (const b of bins) if (b && !toFetch.includes(b)) toFetch.push(b);
+  }
+  for (const f of toFetch.slice(0, 5)) {
+    try { const c = await fetchUrl(`https://unpkg.com/${pkg}@${latest}/${f}`); if (c?.length > 10) filesToScan.push({ name: f, content: c }); } catch {}
+  }
+  for (const sf of ['SKILL.md', 'skill.json', 'mcp.json']) {
+    try { const c = await fetchUrl(`https://unpkg.com/${pkg}@${latest}/${sf}`); if (c?.length > 10) filesToScan.push({ name: sf, content: c }); } catch {}
+  }
+
+  const fileResults = filesToScan.map(file => {
+    const result = scanContent(file.content, `npm:${pkg}/${file.name}`);
+    return { file: file.name, riskLevel: result.riskLevel, riskScore: result.riskScore, findings: result.summary.total, critical: result.summary.critical };
+  });
+
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const worstRisk = fileResults.reduce((w, r) => riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(w) ? r.riskLevel : w, 'clean');
+  const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+
+  // Check install scripts
+  const warnings = [];
+  for (const s of ['preinstall', 'postinstall', 'preuninstall']) {
+    if (versionMeta.scripts?.[s]) {
+      const cmd = versionMeta.scripts[s];
+      warnings.push({
+        severity: /curl|wget|fetch|http|eval|exec|child_process/i.test(cmd) ? 'high' : 'medium',
+        script: s, command: cmd.substring(0, 200),
+      });
+    }
+  }
+
+  return {
+    package: pkg, version: latest, overallRisk: worstRisk, totalFindings,
+    packageWarnings: warnings, filesScanned: fileResults.length, files: fileResults,
+    verdict: totalFindings === 0 && warnings.length === 0
+      ? `✅ ${pkg}@${latest} appears clean.`
+      : warnings.some(w => w.severity === 'high')
+        ? `🔴 Suspicious install scripts in ${pkg}@${latest}.`
+        : totalFindings > 0
+          ? `⚠️ ${totalFindings} finding(s) in ${pkg}@${latest}.`
+          : `✅ ${pkg}@${latest} appears clean.`,
+  };
+}
+
 const TOOL_HANDLERS = {
   skillaudit_gate: handleGate,
   skillaudit_scan: handleScan,
   skillaudit_scan_content: handleScanContent,
   skillaudit_reputation: handleReputation,
   skillaudit_batch: handleBatch,
+  skillaudit_npm: handleNpm,
 };
 
 // --- MCP JSON-RPC server over stdio ---

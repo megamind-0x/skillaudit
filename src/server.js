@@ -417,6 +417,7 @@ app.get('/', (req, res) => {
         'GET /badge/:domain.svg': 'Embeddable SVG badge for READMEs',
         'GET /badge/scan.svg?url=': 'Live scan → SVG badge in one request',
         'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
+        'GET /scan/npm?package=name': 'Scan an npm package — fetches README, entry point, bin scripts, skill files',
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -725,6 +726,196 @@ app.get('/scan/repo', scanLimiter, async (req, res) => {
       });
     }
     res.status(500).json({ error: `Failed to scan repo: ${err.message}` });
+  }
+});
+
+// --- NPM Package Scanner ---
+app.get('/scan/npm', scanLimiter, async (req, res) => {
+  const pkg = req.query.package;
+  if (!pkg) {
+    return res.status(400).json({
+      error: 'package query parameter is required',
+      example: '/scan/npm?package=@modelcontextprotocol/server-filesystem',
+      hint: 'Pass any npm package name (scoped or unscoped)',
+    });
+  }
+
+  try {
+    // Fetch latest version metadata from npm registry (abbreviated endpoint)
+    const encodedPkg = pkg.startsWith('@') ? `@${encodeURIComponent(pkg.slice(1))}` : encodeURIComponent(pkg);
+    const versionMeta = await fetchJson(`https://registry.npmjs.org/${encodedPkg}/latest`);
+
+    if (versionMeta.error) {
+      return res.status(404).json({ error: `Package not found: ${pkg}`, npmError: versionMeta.error });
+    }
+
+    const latest = versionMeta.version;
+    if (!latest) {
+      return res.status(404).json({ error: `No version info found for ${pkg}` });
+    }
+
+    // Also try to get README from unpkg
+    let readme = null;
+    try {
+      readme = await fetchUrl(`https://unpkg.com/${pkg}@${latest}/README.md`);
+    } catch {}
+
+    // Use versionMeta as both meta and versionMeta
+    const meta = versionMeta;
+
+    // Collect files to scan
+    const filesToScan = [];
+    const npmUrl = `https://www.npmjs.com/package/${pkg}`;
+
+    // 1. README
+    if (readme && readme.length > 50) {
+      filesToScan.push({ name: 'README.md', source: `unpkg:${pkg}/README.md`, content: readme });
+    } else if (meta.readme && meta.readme.length > 50) {
+      filesToScan.push({ name: 'README.md', source: 'npm-registry', content: meta.readme });
+    }
+
+    // 2. package.json scripts (security-relevant)
+    const packageJsonContent = JSON.stringify(versionMeta, null, 2);
+    filesToScan.push({ name: 'package.json', source: 'npm-registry', content: packageJsonContent });
+
+    // 3. Try to fetch main entry point and bin scripts from unpkg
+    const mainFile = versionMeta.main || 'index.js';
+    const filesToFetch = [mainFile];
+
+    // Add bin entries
+    if (versionMeta.bin) {
+      const bins = typeof versionMeta.bin === 'string' ? [versionMeta.bin] : Object.values(versionMeta.bin);
+      for (const b of bins) {
+        if (b && !filesToFetch.includes(b)) filesToFetch.push(b);
+      }
+    }
+
+    // Fetch from unpkg (CDN for npm packages)
+    for (const file of filesToFetch.slice(0, 5)) {
+      try {
+        const unpkgUrl = `https://unpkg.com/${pkg}@${latest}/${file}`;
+        const content = await fetchUrl(unpkgUrl);
+        if (content && content.length > 10) {
+          filesToScan.push({ name: file, source: unpkgUrl, content });
+        }
+      } catch {
+        // File might not exist, skip
+      }
+    }
+
+    // 4. Check for SKILL.md or similar skill files
+    for (const skillFile of ['SKILL.md', 'skill.json', 'mcp.json', 'ai-plugin.json']) {
+      try {
+        const url = `https://unpkg.com/${pkg}@${latest}/${skillFile}`;
+        const content = await fetchUrl(url);
+        if (content && content.length > 10) {
+          filesToScan.push({ name: skillFile, source: url, content });
+        }
+      } catch {}
+    }
+
+    // Scan all collected files
+    const fileResults = filesToScan.map(file => {
+      const result = scanContent(file.content, file.source || `npm:${pkg}/${file.name}`);
+      const id = recordScan(`npm:${pkg}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // Analyze package.json for suspicious signals
+    const packageWarnings = [];
+    const scripts = versionMeta.scripts || {};
+    const suspiciousScripts = ['preinstall', 'postinstall', 'preuninstall'];
+    for (const s of suspiciousScripts) {
+      if (scripts[s]) {
+        const script = scripts[s];
+        // Flag if install scripts do network calls or exec
+        if (/curl|wget|fetch|http|eval|exec|child_process|\.sh\b/i.test(script)) {
+          packageWarnings.push({
+            type: 'suspicious_install_script',
+            severity: 'high',
+            script: s,
+            command: script.substring(0, 200),
+            description: `"${s}" script contains potentially dangerous operations`,
+          });
+        } else {
+          packageWarnings.push({
+            type: 'install_script',
+            severity: 'medium',
+            script: s,
+            command: script.substring(0, 200),
+            description: `Package has a "${s}" lifecycle script — runs automatically on install`,
+          });
+        }
+      }
+    }
+
+    // Check dependencies for known suspicious packages
+    const deps = { ...versionMeta.dependencies, ...versionMeta.optionalDependencies };
+    const depCount = Object.keys(deps).length;
+
+    // Overall risk
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    // Bump risk if suspicious install scripts found
+    let overallRisk = worstFileRisk;
+    if (packageWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    res.json({
+      package: pkg,
+      version: latest,
+      description: meta.description || null,
+      author: versionMeta.author?.name || versionMeta.author || null,
+      license: versionMeta.license || null,
+      homepage: versionMeta.homepage || null,
+      repository: versionMeta.repository?.url || null,
+      npmUrl,
+      publishedAt: null,
+      dependencyCount: depCount,
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: totalScore,
+      totalFindings,
+      totalCritical,
+      totalHigh,
+      packageWarnings,
+      verdict: totalFindings === 0 && packageWarnings.length === 0
+        ? `✅ Package ${pkg}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues in ${pkg}@${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.`
+          : packageWarnings.some(w => w.severity === 'high')
+            ? `🔴 Suspicious install scripts in ${pkg}@${latest} — scripts run automatically on \`npm install\`. Review carefully.`
+            : totalHigh > 0
+              ? `🔶 High risk findings in ${pkg}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
+              : `⚠️ ${totalFindings} finding(s) in ${pkg}@${latest}. Minor concerns detected.`,
+      files: fileResults,
+      badgeUrl: `https://skillaudit.vercel.app/badge/npmjs.com.svg`,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Package not found on npm: ${pkg}`, hint: 'Check the package name and try again.' });
+    }
+    res.status(500).json({ error: `Failed to scan package: ${err.message}` });
   }
 });
 

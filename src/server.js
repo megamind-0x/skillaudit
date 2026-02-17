@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
 const { SECRET_DETECTORS } = require('./secrets');
 const trust = require('./trust');
+const { toSarif } = require('./sarif');
 const { verifyPayment } = require('./verify-payment');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -345,6 +346,9 @@ app.get('/scan/quick', scanLimiter, async (req, res) => {
     result.id = id;
     result.shareUrl = `/scan/${id}`;
     result.reportUrl = `/report/${id}`;
+    if (req.query.format === 'sarif') {
+      return res.type('application/sarif+json').json(toSarif(result));
+    }
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: `Failed to fetch: ${err.message}` });
@@ -428,6 +432,7 @@ app.get('/', (req, res) => {
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
         'GET /certificate/:id': 'Signed audit certificate — cryptographic proof a skill was scanned',
         'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
+        'GET /scan/:id/sarif': 'SARIF v2.1.0 output — industry-standard format for GitHub Code Scanning, VS Code, Azure DevOps',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /health': 'Health check',
       }
@@ -470,7 +475,7 @@ app.get('/secrets/detectors', (req, res) => {
 
 // --- Scan URL ---
 app.post('/scan/url', scanLimiter, async (req, res) => {
-  const { url, callback } = req.body;
+  const { url, callback, format } = req.body;
   if (!url) return res.status(400).json({ error: 'url is required' });
   try {
     const content = await fetchUrl(url);
@@ -480,6 +485,9 @@ app.post('/scan/url', scanLimiter, async (req, res) => {
     result.shareUrl = `/scan/${id}`;
     result.reportUrl = `/report/${id}`;
     if (callback) fireCallback(callback, result);
+    if (format === 'sarif' || req.query.format === 'sarif') {
+      return res.type('application/sarif+json').json(toSarif(result));
+    }
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: `Failed to fetch: ${err.message}` });
@@ -488,13 +496,16 @@ app.post('/scan/url', scanLimiter, async (req, res) => {
 
 // --- Scan Content ---
 app.post('/scan/content', scanLimiter, (req, res) => {
-  const { content, source } = req.body;
+  const { content, source, format } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
   const result = scanContent(content, source || 'direct-input');
   const id = recordScan(source || 'direct-input', result);
   result.id = id;
   result.shareUrl = `/scan/${id}`;
   result.reportUrl = `/report/${id}`;
+  if (format === 'sarif' || req.query.format === 'sarif') {
+    return res.type('application/sarif+json').json(toSarif(result));
+  }
   res.json(result);
 });
 
@@ -722,6 +733,14 @@ app.get('/scan/:id', async (req, res) => {
   const result = await getScanResult(req.params.id);
   if (!result) return res.status(404).json({ error: 'Scan not found' });
   res.json(result);
+});
+
+// --- SARIF Output (industry-standard security format) ---
+app.get('/scan/:id/sarif', async (req, res) => {
+  const result = await getScanResult(req.params.id);
+  if (!result) return res.status(404).json({ error: 'Scan not found' });
+  const sarif = toSarif(result, { includeSuppressed: req.query.suppressed === 'true' });
+  res.type('application/sarif+json').json(sarif);
 });
 
 // --- Report Page (HTML) ---
@@ -1572,7 +1591,7 @@ app.get('/openapi.json', (req, res) => {
     servers: [{ url: 'https://skillaudit.vercel.app', description: 'Production' }],
     paths: {
       '/gate': { get: { summary: 'Pre-install gate — should I install this skill?', description: 'The infrastructure endpoint. Returns a simple allow/warn/deny decision with minimal JSON. Designed for agents to call before installing ANY skill. One call, one answer.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill to check' }, { name: 'threshold', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' }, description: 'Risk threshold — deny at or above this level' }], responses: { '200': { description: 'Gate decision: {allow: bool, decision: "allow"|"warn"|"deny", risk, score, findings, verdict}' }, '400': { description: 'Missing URL or fetch error' } } } },
-      '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
+      '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents. Add ?format=sarif for SARIF v2.1.0 output.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json', 'sarif'] }, description: 'Output format (default: json, sarif for SARIF v2.1.0)' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
@@ -1580,6 +1599,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
+      '/scan/{id}/sarif': { get: { summary: 'Get scan result in SARIF v2.1.0 format', description: 'Returns the scan result in SARIF (Static Analysis Results Interchange Format) — the industry standard for security tools. Upload directly to GitHub Code Scanning, view in VS Code SARIF Viewer, or feed into any SARIF-compatible pipeline. Add ?suppressed=true to include findings that were suppressed as documentation context.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }, { name: 'suppressed', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'false' }, description: 'Include suppressed findings' }], responses: { '200': { description: 'SARIF v2.1.0 document', content: { 'application/sarif+json': {} } }, '404': { description: 'Scan not found' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },
       '/rules': { get: { summary: 'List detection rules', responses: { '200': { description: 'Rule list' } } } },
       '/history': { get: { summary: 'Recent scan history', responses: { '200': { description: 'History' } } } },

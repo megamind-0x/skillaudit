@@ -2917,8 +2917,6 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   </div>
   <div class="stats">
     <span><strong>${agents.length}</strong> verified agents</span>
-    <span><strong>${tools.length}</strong> discovered tools</span>
-    <span><strong>${agents.length + tools.length}</strong> total</span>
   </div>
   <div class="nav">
     <a href="/registry/spec">📖 Spec</a>
@@ -2942,20 +2940,8 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
     ${agentCards}
   </div>
 
-  <div class="section-header" style="margin-top:3rem">
-    <h2 style="color:#00aaff;font-size:1.2rem">🔧 Tools & Services <span style="color:#555;font-size:0.8rem;font-weight:400">— discovered via crawling</span></h2>
-    <p style="color:#555;font-size:0.8rem;margin-top:0.3rem">MCP servers and services discovered from mcp.so, Smithery, and Moltbook. These are tools agents can use — not agents themselves.</p>
-  </div>
-  <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;margin:1rem 0">
-      <thead><tr>
-        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Name</th>
-        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Description</th>
-        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Platform</th>
-        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Source</th>
-      </tr></thead>
-      <tbody>${toolRows}</tbody>
-    </table>
+  <div style="text-align:center;margin-top:2rem;padding:1rem;background:#111133;border:1px solid #2a2a5a;border-radius:8px">
+    <p style="color:#888;font-size:0.85rem">Looking for MCP tools & services? They've moved to the <a href="/" style="color:#00ff88">main SkillAudit page</a>.</p>
   </div>
 
   <div style="margin:2rem 0;background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:700px;margin-left:auto;margin-right:auto">

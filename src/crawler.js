@@ -253,23 +253,69 @@ async function crawlMcpSo() {
       } catch {}
     }
 
-    // Extract server cards from HTML
-    const cardPattern = /href=["']\/server[s]?\/([^"']+)["'][^>]*>[\s\S]*?<(?:h[23]|span|div)[^>]*>([^<]+)/gi;
-    let match;
-    while ((match = cardPattern.exec(html)) !== null) {
-      const serverSlug = match[1].trim();
-      const name = match[2].trim();
-      if (name && !results.find(r => r.slug === slugify(`mcp-${name}`))) {
-        results.push({
-          slug: slugify(`mcp-${serverSlug}`),
-          name,
-          description: `${name} — MCP server from mcp.so`,
-          type: 'tool',
-          platform: 'mcp',
-          capabilities: [],
-          url: `https://mcp.so/server/${serverSlug}`,
-          sourceId: 'mcp.so',
-        });
+    // Extract server cards from HTML — try multiple patterns
+    // Pattern 1: server links followed by text content (greedy name match)
+    const cardPatterns = [
+      /href=["']\/server[s]?\/([^"']+)["'][^>]*>([^<]{2,})</gi,
+      /href=["']\/server[s]?\/([^"']+)["'][\s\S]*?<(?:h[23]|span|div|p)[^>]*class[^>]*>([^<]{2,})</gi,
+      /\/server[s]?\/([a-z0-9_-]+)["'][^>]*>[\s\S]*?["']>([A-Z][^<]{2,}?)</gi,
+    ];
+    for (const cardPattern of cardPatterns) {
+      let match;
+      while ((match = cardPattern.exec(html)) !== null) {
+        const serverSlug = match[1].trim();
+        let name = match[2].trim();
+        // Skip single-char names (broken parse) and HTML artifacts
+        if (!name || name.length <= 1 || /^[<\s]/.test(name)) continue;
+        // Clean up: remove trailing HTML, limit length
+        name = name.replace(/<.*$/, '').trim();
+        if (name.length > 100) name = name.slice(0, 100);
+        if (!results.find(r => r.slug === slugify(`mcp-${serverSlug}`))) {
+          results.push({
+            slug: slugify(`mcp-${serverSlug}`),
+            name,
+            description: `${name} — MCP server from mcp.so`,
+            type: 'tool',
+            platform: 'mcp',
+            capabilities: [],
+            url: `https://mcp.so/server/${serverSlug}`,
+            sourceId: 'mcp.so',
+          });
+        }
+      }
+    }
+
+    // Also try to extract from inline JSON/script data (RSC payloads, etc.)
+    const scriptBlocks = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+    for (const block of scriptBlocks) {
+      const inner = block.replace(/<\/?script[^>]*>/gi, '');
+      // Look for JSON objects with name/title and server-like structure
+      const jsonObjects = inner.match(/\{"[^"]*name":\s*"[^"]+"/g) || [];
+      for (const start of jsonObjects) {
+        try {
+          // Try to extract a reasonable JSON chunk
+          const idx = inner.indexOf(start);
+          const chunk = inner.slice(idx, idx + 500);
+          // Extract name
+          const nameMatch = chunk.match(/"(?:name|title)"\s*:\s*"([^"]{2,})"/);
+          const descMatch = chunk.match(/"(?:description|summary)"\s*:\s*"([^"]{2,})"/);
+          if (nameMatch) {
+            const name = nameMatch[1];
+            const slug = slugify(`mcp-${name}`);
+            if (!results.find(r => r.slug === slug)) {
+              results.push({
+                slug,
+                name,
+                description: descMatch ? descMatch[1].slice(0, 200) : `${name} — MCP server from mcp.so`,
+                type: 'tool',
+                platform: 'mcp',
+                capabilities: [],
+                url: `https://mcp.so/server/${slugify(name)}`,
+                sourceId: 'mcp.so',
+              });
+            }
+          }
+        } catch {}
       }
     }
   } catch (scrapeErr) {

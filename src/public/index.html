@@ -224,6 +224,23 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
 </div>
 </section>
 
+<div class="recent-scans" id="tools-section" style="display:none">
+  <h2>🔧 Discovered MCP Servers & Tools</h2>
+  <p style="color:#555;font-size:0.8rem;margin-bottom:1rem">Tools and services discovered from mcp.so, Smithery, and Moltbook — scan any of them for security issues.</p>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem" id="tools-table">
+      <thead><tr>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Name</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Description</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Platform</th>
+        <th style="text-align:left;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Source</th>
+        <th style="text-align:center;color:#00aaff;padding:0.5rem;border-bottom:2px solid #2a2a5a;font-size:0.8rem">Scan</th>
+      </tr></thead>
+      <tbody id="tools-body"></tbody>
+    </table>
+  </div>
+</div>
+
 <div class="recent-scans" id="recent-section" style="display:none">
   <h2>📋 Recent Scans</h2>
   <ul class="recent-list" id="recent-list"></ul>
@@ -347,7 +364,24 @@ async function runScan(){
   finally{btn.disabled=false;btn.textContent='Scan Now'}
 }
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')runScan()});
-loadStats();loadRecent();
+async function loadTools(){
+  try{const r=await fetch('/registry/tools');const d=await r.json();
+    if(d.tools&&d.tools.length>0){
+      const tbody=document.getElementById('tools-body');
+      tbody.innerHTML=d.tools.slice(0,30).map(t=>{
+        const name=(t.name||t.slug||'Unknown').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        const desc=(t.description||'').slice(0,80).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        const platform=(t.platform||t.sourceId||'mcp').replace(/</g,'&lt;');
+        const source=(t.sourceId||'crawler').replace(/</g,'&lt;');
+        const scanUrl=t.endpoints?.primary||t.url||'';
+        const scanLink=scanUrl?`<a href="javascript:void(0)" onclick="document.getElementById('url-input').value='${scanUrl.replace(/'/g,"\\'")}';runScan()" style="background:#1a1a4e;color:#00ff88;border:1px solid #00ff88;border-radius:5px;padding:0.2rem 0.6rem;font-size:0.7rem;text-decoration:none;white-space:nowrap">Scan</a>`:'—';
+        return`<tr><td style="padding:0.5rem;border-bottom:1px solid #1a1a3e"><strong style="color:#ccc">${name}</strong></td><td style="padding:0.5rem;border-bottom:1px solid #1a1a3e;color:#888;font-size:0.8rem">${desc}</td><td style="padding:0.5rem;border-bottom:1px solid #1a1a3e"><span style="background:#1a2a3d;color:#00aaff;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem">${platform}</span></td><td style="padding:0.5rem;border-bottom:1px solid #1a1a3e;color:#555;font-size:0.75rem">${source}</td><td style="padding:0.5rem;border-bottom:1px solid #1a1a3e;text-align:center">${scanLink}</td></tr>`;
+      }).join('');
+      document.getElementById('tools-section').style.display='block';
+    }
+  }catch{}
+}
+loadStats();loadRecent();loadTools();
 </script>
 </body>
 </html>

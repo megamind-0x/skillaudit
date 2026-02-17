@@ -1978,11 +1978,16 @@ app.post('/registry/create', scanLimiter, async (req, res) => {
   await db.redis('SET', `agent:hosted:${slug}`, JSON.stringify(registration), 'EX', AGENT_TTL);
   await db.redis('SADD', 'registry:agents', `hosted:${slug}`);
 
+  // Auto-scan: trigger background trust score calculation
+  const agentDomain = agentData.endpoints?.api ? getDomain(agentData.endpoints.api) : null;
+  trust.backgroundTrustScan(slug, agentData, profile.createdAt, agentDomain).catch(() => {});
+
   res.json({
     success: true,
     slug,
     profileUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}`,
     cardUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}/card`,
+    badgeUrl: `https://skillaudit.vercel.app/registry/badge/${slug}`,
     agentJsonUrl: `https://skillaudit.vercel.app/.well-known/agents/${slug}/agent.json`,
     agent: agentData,
   });
@@ -2010,6 +2015,10 @@ app.get('/registry/profiles/:slug/card', async (req, res) => {
   let profile;
   try { profile = JSON.parse(raw); } catch { return res.status(500).send('Error'); }
   const a = profile.agent;
+  const trustData = await trust.getTrustScore(slug);
+  const trustScore = trustData ? trustData.score : 0;
+  const trustLevel_ = trustData ? trustData.level : 'Unverified';
+  const trustColor_ = trustData ? trustData.color : '#e05d44';
 
   const capsHtml = (a.capabilities || []).map(c => `<span style="background:#1a1a3e;color:#00ff88;padding:0.2rem 0.6rem;border-radius:4px;font-size:0.8rem">${esc(c)}</span>`).join(' ');
 
@@ -2065,6 +2074,24 @@ code{background:#0f0f23;padding:0.15rem 0.4rem;border-radius:3px;font-size:0.8re
   </div>
   <p style="color:#ccc;font-size:0.95rem;line-height:1.5">${esc(a.description)}</p>
   ${a.platform ? `<p style="color:#555;font-size:0.8rem;margin-top:0.5rem">Platform: <strong style="color:#aaa">${esc(a.platform)}</strong></p>` : ''}
+  <div class="section" style="margin-top:1rem;padding-top:0.8rem">
+    <h4>Trust Score</h4>
+    <div style="display:flex;align-items:center;gap:1rem;margin-top:0.5rem">
+      <div style="position:relative;width:64px;height:64px">
+        <svg viewBox="0 0 36 36" width="64" height="64">
+          <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#1a1a3e" stroke-width="3"/>
+          <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="${trustColor_}" stroke-width="3" stroke-dasharray="${trustScore}, 100" stroke-linecap="round"/>
+        </svg>
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:0.9rem;font-weight:900;color:${trustColor_}">${trustScore}</div>
+      </div>
+      <div>
+        <div style="color:${trustColor_};font-weight:700;font-size:1.1rem">${esc(trustLevel_)}</div>
+        ${trustData && trustData.lastScanAt ? `<div style="color:#555;font-size:0.75rem">Last scan: ${esc(trustData.lastScanAt.split('T')[0])}</div>` : ''}
+      </div>
+    </div>
+    ${trustData && trustData.factorDetails ? `<div style="margin-top:0.6rem;display:flex;flex-direction:column;gap:0.2rem">${trustData.factorDetails.map(f => `<div style="font-size:0.75rem;color:#888">✓ ${esc(f.label)} <span style="color:#555">(+${f.points})</span></div>`).join('')}</div>` : '<div style="font-size:0.75rem;color:#555;margin-top:0.4rem">No scan data yet</div>'}
+    <div style="margin-top:0.5rem"><img src="/registry/badge/${esc(slug)}" alt="Trust Badge" style="height:20px"></div>
+  </div>
   ${(a.capabilities || []).length > 0 ? `<div class="section"><h4>Capabilities</h4><div style="display:flex;gap:0.4rem;flex-wrap:wrap">${capsHtml}</div></div>` : ''}
   ${socialLinks.length > 0 ? `<div class="section"><h4>Social</h4><div style="display:flex;flex-direction:column;gap:0.3rem">${socialLinks.join('')}</div></div>` : ''}
   ${endpointHtml.length > 0 ? `<div class="section"><h4>Endpoints</h4>${endpointHtml.join('')}</div>` : ''}
@@ -2234,6 +2261,9 @@ app.post('/registry/register', scanLimiter, async (req, res) => {
     // Add to agent index set
     await db.redis('SADD', 'registry:agents', domain);
 
+    // Auto-scan: trigger background trust score calculation
+    trust.backgroundTrustScan(domain, agentData, registration.registeredAt, domain).catch(() => {});
+
     res.json({
       success: true,
       id,
@@ -2242,6 +2272,7 @@ app.post('/registry/register', scanLimiter, async (req, res) => {
       message: `Agent "${agentData.name}" registered successfully.`,
       profileUrl: `https://skillaudit.vercel.app/registry/agent/${id}`,
       resolveUrl: `https://skillaudit.vercel.app/registry/resolve?domain=${domain}`,
+      badgeUrl: `https://skillaudit.vercel.app/registry/badge/${domain}`,
     });
   } catch (err) {
     res.status(400).json({ error: `Failed to fetch agent.json: ${err.message}`, hint: `Make sure ${url} is accessible` });
@@ -2305,6 +2336,14 @@ app.get('/registry/agents', async (req, res) => {
     return res.json({ total: 0, page, limit, agents: [] });
   }
 
+  // Attach trust scores
+  for (const a of agents) {
+    const key = a.hostedSlug || a.domain;
+    const t = await trust.getTrustScore(key);
+    a.trustScore = t ? t.score : 0;
+    a.trustLevel = t ? t.level : 'Unverified';
+  }
+
   // Search filter
   if (search) {
     agents = agents.filter(a =>
@@ -2314,8 +2353,13 @@ app.get('/registry/agents', async (req, res) => {
     );
   }
 
-  // Sort by registration date (newest first)
-  agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+  // Sort
+  const sort = req.query.sort || 'newest';
+  if (sort === 'trust') {
+    agents.sort((a, b) => (b.trustScore || 0) - (a.trustScore || 0));
+  } else {
+    agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+  }
 
   const total = agents.length;
   const start = (page - 1) * limit;
@@ -2394,9 +2438,14 @@ app.get('/registry', async (req, res) => {
   for (const key of keys) {
     const redisKey = key.startsWith('hosted:') ? `agent:${key}` : `agent:${key}`;
     const raw = await db.redis('GET', redisKey);
-    if (raw) { try { agents.push(JSON.parse(raw)); } catch {} }
+    if (raw) { try { const a = JSON.parse(raw); const tKey = a.hostedSlug || a.domain; const t = await trust.getTrustScore(tKey); a.trustScore = t ? t.score : 0; a.trustLevel = t ? t.level : 'Unverified'; a.trustColor = t ? t.color : '#e05d44'; agents.push(a); } catch {} }
   }
-  agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+  const landingSort = req.query.sort || 'newest';
+  if (landingSort === 'trust') {
+    agents.sort((a, b) => (b.trustScore || 0) - (a.trustScore || 0));
+  } else {
+    agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+  }
   const hostedCount = agents.filter(a => a.hosted).length;
   const selfHostedCount = agents.length - hostedCount;
 
@@ -2420,7 +2469,10 @@ app.get('/registry', async (req, res) => {
           ${(a.agent.capabilities || []).slice(0, 4).map(c => `<span style="background:#1a1a3e;color:#888;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem">${esc(c)}</span>`).join('')}
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.8rem;padding-top:0.5rem;border-top:1px solid #1a1a3e">
-          <span style="color:#555;font-size:0.7rem">${a.agent.platform ? esc(a.agent.platform) : ''}</span>
+          <div style="display:flex;align-items:center;gap:0.5rem">
+            <span style="color:${a.trustColor || '#e05d44'};font-weight:700;font-size:0.8rem">${a.trustScore || 0}</span>
+            <span style="color:#555;font-size:0.65rem">${esc(a.trustLevel || 'Unverified')}</span>
+          </div>
           <a href="${viewUrl}" style="color:#00ff88;font-size:0.8rem">View →</a>
         </div>
       </div>`;
@@ -2472,6 +2524,10 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   </div>
   <div class="search-box">
     <input type="text" id="search" placeholder="Search agents by name or domain..." oninput="filterAgents()">
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;justify-content:center">
+      <a href="/registry?sort=newest" style="background:#111133;padding:0.3rem 0.7rem;border-radius:5px;font-size:0.75rem;border:1px solid #2a2a5a;color:#888">Newest</a>
+      <a href="/registry?sort=trust" style="background:#111133;padding:0.3rem 0.7rem;border-radius:5px;font-size:0.75rem;border:1px solid #2a2a5a;color:#888">Trust Score</a>
+    </div>
   </div>
   <div class="agents-grid" id="agents-grid">
     ${agentCards}

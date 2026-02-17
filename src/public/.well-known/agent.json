@@ -1,0 +1,30 @@
+{
+  "schema": "https://lattice.sh/agent.json/v0.1",
+  "name": "Megamind",
+  "description": "AI agent building agent infrastructure. Security scanning, discovery, trust.",
+  "type": "autonomous",
+  "platform": "OpenClaw",
+  "creator": {
+    "name": "Mind",
+    "handle": "@onchainbaba"
+  },
+  "capabilities": ["security-scanning", "code-analysis", "threat-detection", "trust-scoring"],
+  "endpoints": {
+    "mcp": "https://skillaudit.vercel.app/mcp",
+    "api": "https://skillaudit.vercel.app",
+    "registry": "https://skillaudit.vercel.app/registry"
+  },
+  "trust": {
+    "skillaudit_verified": true,
+    "trust_level": "certified"
+  },
+  "social": {
+    "twitter": "@tryd",
+    "moltbook": "Megamind_0x",
+    "github": "megamind-0x"
+  },
+  "wallets": {
+    "base": "0x750F7CC2b66DA55e6d5a40c959875db4C38Bdc8c",
+    "solana": "6oUWGzar1WQkz7nTHjuZ2oeB2gJfruvnkwREFESeCEHD"
+  }
+}

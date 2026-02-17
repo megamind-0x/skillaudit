@@ -2013,6 +2013,220 @@ app.post('/registry/create', scanLimiter, async (req, res) => {
   });
 });
 
+// --- Agent Profile Management (Auth, Update, Delete, Edit) ---
+
+// POST /registry/auth — mini-challenge auth for profile management
+app.post('/registry/auth', scanLimiter, async (req, res) => {
+  try {
+    const { slug, step } = req.body;
+    if (!slug || typeof slug !== 'string') return res.status(400).json({ error: 'slug is required' });
+
+    // Check agent exists
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) return res.status(404).json({ error: 'Agent not found', slug });
+
+    // Step 1: Request challenge
+    if (!step || step === 'request') {
+      const timestamp = Date.now().toString();
+      const nonce = crypto.randomBytes(16).toString('hex');
+      const challengeId = crypto.randomUUID();
+
+      // Store challenge with 10s TTL
+      await db.redis('SET', `auth-challenge:${challengeId}`, JSON.stringify({ slug, timestamp, nonce }), 'EX', 10);
+
+      return res.json({
+        challenge_id: challengeId,
+        slug,
+        timestamp,
+        nonce,
+        instruction: `Compute SHA-256 of "${slug}:{timestamp}:{nonce}" and POST back with step="solve"`,
+        expires_in: 10,
+      });
+    }
+
+    // Step 2: Solve challenge
+    if (step === 'solve') {
+      const { challenge_id, hash } = req.body;
+      if (!challenge_id || !hash) return res.status(400).json({ error: 'challenge_id and hash are required' });
+
+      const challengeRaw = await db.redis('GET', `auth-challenge:${challenge_id}`);
+      if (!challengeRaw) return res.status(410).json({ error: 'Challenge expired or not found' });
+
+      const challenge = JSON.parse(challengeRaw);
+      if (challenge.slug !== slug) return res.status(403).json({ error: 'Slug mismatch' });
+
+      // Consume challenge
+      await db.redis('DEL', `auth-challenge:${challenge_id}`);
+
+      // Verify hash
+      const expected = crypto.createHash('sha256').update(`${slug}:${challenge.timestamp}:${challenge.nonce}`).digest('hex');
+      if (hash !== expected) return res.status(403).json({ error: 'Invalid hash' });
+
+      // Issue session token (15 min TTL)
+      const token = crypto.randomUUID();
+      await db.redis('SET', `agent-session:${token}`, slug, 'EX', 900);
+
+      return res.json({
+        success: true,
+        session_token: token,
+        expires_in: 900,
+        message: 'Use this token as Bearer auth for PUT/DELETE on your profile.',
+      });
+    }
+
+    return res.status(400).json({ error: 'Invalid step. Use "request" or "solve".' });
+  } catch (e) {
+    console.error('[registry/auth]', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Middleware: verify agent session token and ownership
+async function verifyAgentSession(req, res) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Authorization: Bearer {session_token} required. Get one via POST /registry/auth' });
+    return null;
+  }
+  const token = auth.slice(7);
+  const ownerSlug = await db.redis('GET', `agent-session:${token}`);
+  if (!ownerSlug) {
+    res.status(401).json({ error: 'Session expired or invalid. Re-authenticate via POST /registry/auth' });
+    return null;
+  }
+  if (ownerSlug !== req.params.slug) {
+    res.status(403).json({ error: 'Session token does not match this profile slug' });
+    return null;
+  }
+  return ownerSlug;
+}
+
+// GET /registry/profiles/:slug/edit — editable profile data
+app.get('/registry/profiles/:slug/edit', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) return res.status(404).json({ error: 'Profile not found', slug });
+    const profile = JSON.parse(raw);
+    const agent = profile.agent || {};
+    return res.json({
+      slug,
+      name: agent.name || null,
+      description: agent.description || null,
+      type: agent.type || null,
+      platform: agent.platform || null,
+      creator: agent.creator || null,
+      capabilities: agent.capabilities || [],
+      endpoints: agent.endpoints || {},
+      social: agent.social || {},
+      wallets: agent.wallets || {},
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+    });
+  } catch (e) {
+    console.error('[registry/edit]', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// PUT /registry/profiles/:slug — update agent profile
+app.put('/registry/profiles/:slug', scanLimiter, async (req, res) => {
+  try {
+    const ownerSlug = await verifyAgentSession(req, res);
+    if (!ownerSlug) return;
+
+    const slug = req.params.slug;
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) return res.status(404).json({ error: 'Profile not found', slug });
+
+    const profile = JSON.parse(raw);
+    const agent = profile.agent || {};
+    const { name, description, type, platform, creator, capabilities, endpoints, social, wallets } = req.body;
+
+    // Validate fields (same as creation)
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name) return res.status(400).json({ error: 'name must be a non-empty string' });
+      if (name.length > 100) return res.status(400).json({ error: 'Name too long (max 100 chars)' });
+      agent.name = name;
+    }
+    if (description !== undefined) {
+      if (typeof description !== 'string' || !description) return res.status(400).json({ error: 'description must be a non-empty string' });
+      if (description.length > 500) return res.status(400).json({ error: 'Description too long (max 500 chars)' });
+      agent.description = description;
+    }
+    if (type !== undefined) agent.type = type;
+    if (platform !== undefined) agent.platform = platform;
+    if (creator !== undefined) agent.creator = creator;
+    if (capabilities !== undefined) agent.capabilities = capabilities;
+    if (endpoints !== undefined) agent.endpoints = endpoints;
+    if (social !== undefined) agent.social = social;
+    if (wallets !== undefined) agent.wallets = wallets;
+
+    profile.agent = agent;
+    profile.updatedAt = new Date().toISOString();
+
+    await db.redis('SET', `hosted-agent:${slug}`, JSON.stringify(profile));
+
+    // Update main agent index too
+    const regRaw = await db.redis('GET', `agent:hosted:${slug}`);
+    if (regRaw) {
+      try {
+        const reg = JSON.parse(regRaw);
+        reg.agent = agent;
+        reg.lastVerifiedAt = profile.updatedAt;
+        await db.redis('SET', `agent:hosted:${slug}`, JSON.stringify(reg), 'EX', AGENT_TTL);
+      } catch {}
+    }
+
+    // Trigger trust rescan
+    const agentDomain = agent.endpoints?.api ? getDomain(agent.endpoints.api) : null;
+    trust.backgroundTrustScan(slug, agent, profile.createdAt, agentDomain).catch(e => console.error('[trust] rescan failed for', slug, e.message));
+
+    return res.json({
+      success: true,
+      slug,
+      updatedAt: profile.updatedAt,
+      agent,
+      profileUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}`,
+    });
+  } catch (e) {
+    console.error('[registry/update]', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// DELETE /registry/profiles/:slug — self-deregister
+app.delete('/registry/profiles/:slug', scanLimiter, async (req, res) => {
+  try {
+    const ownerSlug = await verifyAgentSession(req, res);
+    if (!ownerSlug) return;
+
+    const slug = req.params.slug;
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) return res.status(404).json({ error: 'Profile not found', slug });
+
+    // Remove all keys
+    await db.redis('DEL', `hosted-agent:${slug}`);
+    await db.redis('DEL', `agent:hosted:${slug}`);
+    await db.redis('DEL', `trust:${slug}`);
+    await db.redis('SREM', 'registry:hosted-agents', slug);
+    await db.redis('SREM', 'registry:agents', `hosted:${slug}`);
+
+    // Invalidate the session token
+    const token = req.headers.authorization.slice(7);
+    await db.redis('DEL', `agent-session:${token}`);
+
+    return res.json({
+      success: true,
+      slug,
+      message: `Agent "${slug}" has been deregistered from the Lattice registry.`,
+    });
+  } catch (e) {
+    console.error('[registry/delete]', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // GET /registry/profiles/:slug — hosted agent or tool profile as JSON
 app.get('/registry/profiles/:slug', async (req, res) => {
   const slug = req.params.slug;

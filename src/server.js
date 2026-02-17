@@ -1770,6 +1770,183 @@ function reportNotFound() {
 <h1>404</h1><p>Scan report not found or expired.</p><p><a href="/">← Back to SkillAudit</a></p></div></body></html>`;
 }
 
+// --- MCP Streamable HTTP Transport ---
+const MCP_TOOLS = [
+  {
+    name: 'scan_url',
+    description: 'Scan a skill/MCP server by URL for security issues. Returns risk level, findings, and verdict.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the skill file or MCP server to scan' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'scan_github',
+    description: 'Scan a GitHub repository for skill files and security issues.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'GitHub repository in owner/name format (e.g. modelcontextprotocol/servers)' },
+        branch: { type: 'string', description: 'Branch to scan (default: main)' },
+      },
+      required: ['repo'],
+    },
+  },
+  {
+    name: 'gate_check',
+    description: 'Pre-install gate check. Returns allow/warn/deny decision for a skill URL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the skill to check' },
+        threshold: { type: 'string', enum: ['clean', 'low', 'moderate', 'high', 'critical'], description: 'Risk threshold (default: moderate). Deny if risk >= threshold.' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'reputation_check',
+    description: 'Check the reputation of a domain based on aggregated scan history.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'Domain to check (e.g. example.com)' },
+      },
+      required: ['domain'],
+    },
+  },
+];
+
+function mcpResponse(id, result) {
+  return { jsonrpc: '2.0', id, result };
+}
+
+function mcpError(id, code, message) {
+  return { jsonrpc: '2.0', id, error: { code, message } };
+}
+
+async function handleMcpToolCall(name, args) {
+  switch (name) {
+    case 'scan_url': {
+      const { url } = args;
+      if (!url) throw new Error('url is required');
+      const content = await fetchUrl(url);
+      const result = scanContent(content, url);
+      const id = recordScan(url, result);
+      return { content: [{ type: 'text', text: JSON.stringify({ ...result, id, reportUrl: `https://skillaudit.vercel.app/report/${id}` }, null, 2) }] };
+    }
+    case 'scan_github': {
+      const { repo, branch } = args;
+      if (!repo) throw new Error('repo is required');
+      const match = repo.match(/(?:github\.com\/)?([^\/\s]+)\/([^\/\s?#]+)/);
+      if (!match) throw new Error('Invalid repo format. Use owner/repo');
+      const owner = match[1];
+      const repoName = match[2].replace(/\.git$/, '');
+      const br = branch || 'main';
+      const skillFiles = await discoverSkillFiles(owner, repoName, br);
+      if (skillFiles.length === 0) {
+        return { content: [{ type: 'text', text: JSON.stringify({ repo: `${owner}/${repoName}`, branch: br, filesScanned: 0, message: 'No skill files found' }) }] };
+      }
+      const results = await Promise.all(skillFiles.map(async (filePath) => {
+        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${br}/${filePath}`;
+        try {
+          const content = await fetchUrl(rawUrl);
+          const result = scanContent(content, rawUrl);
+          const id = recordScan(rawUrl, result);
+          return { file: filePath, riskLevel: result.riskLevel, riskScore: result.riskScore, findings: result.summary.total, id };
+        } catch (err) {
+          return { file: filePath, error: err.message };
+        }
+      }));
+      return { content: [{ type: 'text', text: JSON.stringify({ repo: `${owner}/${repoName}`, branch: br, filesScanned: results.length, results }, null, 2) }] };
+    }
+    case 'gate_check': {
+      const { url, threshold } = args;
+      if (!url) throw new Error('url is required');
+      const thresholdOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
+      const thresholdIdx = thresholdOrder[threshold || 'moderate'] ?? 2;
+      const content = await fetchUrl(url);
+      const result = scanContent(content, url);
+      const id = recordScan(url, result);
+      const riskIdx = thresholdOrder[result.riskLevel] ?? 0;
+      const decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
+      const domain = getDomain(url);
+      let reputation = null;
+      if (domain) { try { reputation = await db.getDomainReputation(domain); } catch {} }
+      return { content: [{ type: 'text', text: JSON.stringify({ allow: decision !== 'deny', decision, risk: result.riskLevel, score: result.riskScore, findings: result.summary.total, verdict: result.verdict, domain, domainReputation: reputation?.reputation || 'unknown', scanId: id, reportUrl: `https://skillaudit.vercel.app/report/${id}` }, null, 2) }] };
+    }
+    case 'reputation_check': {
+      const { domain } = args;
+      if (!domain) throw new Error('domain is required');
+      const rep = await db.getDomainReputation(domain.toLowerCase());
+      if (!rep) {
+        return { content: [{ type: 'text', text: JSON.stringify({ domain, reputation: 'unknown', scanCount: 0, message: 'No scan history for this domain.' }) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(rep, null, 2) }] };
+    }
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+app.post('/mcp', express.json(), async (req, res) => {
+  const { jsonrpc, id, method, params } = req.body;
+
+  if (jsonrpc !== '2.0') {
+    return res.status(400).json(mcpError(id || null, -32600, 'Invalid JSON-RPC version'));
+  }
+
+  try {
+    switch (method) {
+      case 'initialize':
+        return res.json(mcpResponse(id, {
+          protocolVersion: '2025-03-26',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'skillaudit', version: '0.7.0' },
+        }));
+
+      case 'notifications/initialized':
+        return res.json(mcpResponse(id, {}));
+
+      case 'tools/list':
+        return res.json(mcpResponse(id, { tools: MCP_TOOLS }));
+
+      case 'tools/call': {
+        const { name, arguments: args } = params || {};
+        if (!name) return res.json(mcpError(id, -32602, 'Missing tool name'));
+        try {
+          const result = await handleMcpToolCall(name, args || {});
+          return res.json(mcpResponse(id, result));
+        } catch (err) {
+          return res.json(mcpResponse(id, { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }));
+        }
+      }
+
+      default:
+        return res.json(mcpError(id, -32601, `Method not found: ${method}`));
+    }
+  } catch (err) {
+    return res.json(mcpError(id || null, -32603, `Internal error: ${err.message}`));
+  }
+});
+
+// --- MCP Server Card ---
+app.get('/.well-known/mcp/server-card.json', (req, res) => {
+  res.json({
+    name: 'SkillAudit',
+    description: 'Security scanner for AI agent skills — detects credential theft, data exfiltration, prompt injection, and more.',
+    url: 'https://skillaudit.vercel.app/mcp',
+    transport: { type: 'streamable-http', url: 'https://skillaudit.vercel.app/mcp' },
+    version: '0.7.0',
+    tools: MCP_TOOLS.map(t => ({ name: t.name, description: t.description })),
+    authentication: { type: 'none' },
+    contact: 'megamind@skillaudit.vercel.app',
+  });
+});
+
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
   console.log(`🛡️  SkillAudit v0.7.0 running on port ${PORT}`);

@@ -23,6 +23,7 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     skillaudit <url>            Scan a skill from URL
     skillaudit <file>           Scan a local file or directory
     skillaudit --api <url>      Use hosted API instead of local scan
+    skillaudit --mcp            Start as MCP server (stdio, JSON-RPC)
     skillaudit --version        Show version
     skillaudit --help           Show this help
 
@@ -43,6 +44,12 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
 if (args.includes('--version') || args.includes('-v')) {
   console.log(VERSION);
   process.exit(0);
+}
+
+if (args.includes('--mcp')) {
+  require('./mcp-server').startServer();
+  // MCP server runs indefinitely on stdio
+  return;
 }
 
 const useApi = args.includes('--api');

@@ -1772,6 +1772,184 @@ function reportNotFound() {
 
 // --- Lattice Agent Registry ---
 const AGENT_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
+
+function validateSlug(slug) {
+  if (!slug || typeof slug !== 'string') return { valid: false, reason: 'Slug is required' };
+  if (slug.length < 3 || slug.length > 32) return { valid: false, reason: 'Slug must be 3-32 characters' };
+  if (!SLUG_REGEX.test(slug)) return { valid: false, reason: 'Slug must be lowercase alphanumeric + hyphens, start/end with alphanumeric' };
+  return { valid: true };
+}
+
+// POST /registry/create — create a hosted agent profile
+app.post('/registry/create', scanLimiter, async (req, res) => {
+  const { slug, name, description, type, platform, creator, capabilities, endpoints, trust, social, wallets } = req.body;
+
+  // Validate slug
+  const slugCheck = validateSlug(slug);
+  if (!slugCheck.valid) return res.status(400).json({ error: slugCheck.reason });
+
+  // Check uniqueness
+  const existing = await db.redis('GET', `hosted-agent:${slug}`);
+  if (existing) return res.status(409).json({ error: 'Slug already taken', slug });
+
+  // Validate required fields
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+  if (!description || typeof description !== 'string') return res.status(400).json({ error: 'description is required' });
+  if (name.length > 100) return res.status(400).json({ error: 'Name too long (max 100 chars)' });
+  if (description.length > 500) return res.status(400).json({ error: 'Description too long (max 500 chars)' });
+
+  const agentData = {
+    schema: 'https://lattice.sh/agent.json/v0.1',
+    name,
+    description,
+    type: type || 'autonomous',
+    platform: platform || null,
+    creator: creator || null,
+    capabilities: capabilities || [],
+    endpoints: endpoints || {},
+    trust: trust || { trust_level: 'registered' },
+    social: social || {},
+    wallets: wallets || {},
+  };
+
+  const profile = {
+    slug,
+    agent: agentData,
+    hostedBy: 'lattice',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await db.redis('SET', `hosted-agent:${slug}`, JSON.stringify(profile));
+  await db.redis('SADD', 'registry:hosted-agents', slug);
+
+  // Also register in the main agent index
+  const registration = {
+    id: slug,
+    domain: `skillaudit.vercel.app/registry/profiles/${slug}`,
+    hostedSlug: slug,
+    agentJsonUrl: `https://skillaudit.vercel.app/.well-known/agents/${slug}/agent.json`,
+    agent: agentData,
+    registeredAt: profile.createdAt,
+    lastVerifiedAt: profile.createdAt,
+    verified: true,
+    hosted: true,
+  };
+  await db.redis('SET', `agent:hosted:${slug}`, JSON.stringify(registration), 'EX', AGENT_TTL);
+  await db.redis('SADD', 'registry:agents', `hosted:${slug}`);
+
+  res.json({
+    success: true,
+    slug,
+    profileUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}`,
+    cardUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}/card`,
+    agentJsonUrl: `https://skillaudit.vercel.app/.well-known/agents/${slug}/agent.json`,
+    agent: agentData,
+  });
+});
+
+// GET /registry/profiles/:slug — hosted agent profile as JSON
+app.get('/registry/profiles/:slug', async (req, res) => {
+  const slug = req.params.slug;
+  const raw = await db.redis('GET', `hosted-agent:${slug}`);
+  if (!raw) return res.status(404).json({ error: 'Hosted agent not found', slug });
+  try {
+    const profile = JSON.parse(raw);
+    res.json(profile.agent);
+  } catch {
+    res.status(500).json({ error: 'Corrupt profile data' });
+  }
+});
+
+// GET /registry/profiles/:slug/card — HTML profile card
+app.get('/registry/profiles/:slug/card', async (req, res) => {
+  const slug = req.params.slug;
+  const raw = await db.redis('GET', `hosted-agent:${slug}`);
+  if (!raw) return res.status(404).send('<!DOCTYPE html><html><head><title>Not Found</title></head><body style="background:#0f0f23;color:#fff;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh"><h1>Agent not found</h1></body></html>');
+
+  let profile;
+  try { profile = JSON.parse(raw); } catch { return res.status(500).send('Error'); }
+  const a = profile.agent;
+
+  const capsHtml = (a.capabilities || []).map(c => `<span style="background:#1a1a3e;color:#00ff88;padding:0.2rem 0.6rem;border-radius:4px;font-size:0.8rem">${esc(c)}</span>`).join(' ');
+
+  const socialLinks = [];
+  if (a.social) {
+    if (a.social.twitter) socialLinks.push(`<a href="https://x.com/${a.social.twitter.replace('@','')}" target="_blank" style="color:#1DA1F2">𝕏 ${esc(a.social.twitter)}</a>`);
+    if (a.social.github) socialLinks.push(`<a href="https://github.com/${a.social.github}" target="_blank" style="color:#fff">GitHub: ${esc(a.social.github)}</a>`);
+    if (a.social.moltbook) socialLinks.push(`<a href="https://moltbook.com/u/${a.social.moltbook}" target="_blank" style="color:#e01b24">Moltbook: ${esc(a.social.moltbook)}</a>`);
+  }
+
+  const walletHtml = [];
+  if (a.wallets) {
+    if (a.wallets.base) walletHtml.push(`<div style="margin:0.3rem 0"><span style="color:#0052FF;font-weight:700">Base:</span> <code style="font-size:0.75rem;word-break:break-all">${esc(a.wallets.base)}</code></div>`);
+    if (a.wallets.solana) walletHtml.push(`<div style="margin:0.3rem 0"><span style="color:#9945FF;font-weight:700">Solana:</span> <code style="font-size:0.75rem;word-break:break-all">${esc(a.wallets.solana)}</code></div>`);
+    if (a.wallets.ethereum) walletHtml.push(`<div style="margin:0.3rem 0"><span style="color:#627EEA;font-weight:700">Ethereum:</span> <code style="font-size:0.75rem;word-break:break-all">${esc(a.wallets.ethereum)}</code></div>`);
+  }
+
+  const endpointHtml = [];
+  if (a.endpoints) {
+    Object.entries(a.endpoints).forEach(([k, v]) => {
+      endpointHtml.push(`<div style="margin:0.2rem 0"><span style="color:#888">${esc(k)}:</span> <a href="${esc(v)}" style="color:#00ff88;font-size:0.85rem">${esc(v)}</a></div>`);
+    });
+  }
+
+  const trustLevel = (a.trust && a.trust.trust_level) || 'registered';
+  const trustColors = { certified: '#00ff88', verified: '#00aaff', registered: '#ffaa00', 'self-declared': '#888' };
+  const trustColor = trustColors[trustLevel] || '#888';
+
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${esc(a.name)} — Lattice Agent Profile</title>
+<meta property="og:title" content="${esc(a.name)} — AI Agent on Lattice">
+<meta property="og:description" content="${esc(a.description)}">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f0f23;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:1rem}
+a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
+.card{background:#111133;border:1px solid #2a2a5a;border-radius:16px;padding:2rem;max-width:560px;width:100%}
+.section{margin-top:1.2rem;padding-top:1rem;border-top:1px solid #1a1a3e}
+.section h4{color:#888;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem}
+code{background:#0f0f23;padding:0.15rem 0.4rem;border-radius:3px;font-size:0.8rem}
+</style></head><body>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:1rem">
+    <div>
+      <h1 style="color:#fff;font-size:1.6rem;margin-bottom:0.2rem">${esc(a.name)}</h1>
+      <span style="color:#555;font-size:0.85rem">@${esc(slug)}</span>
+    </div>
+    <div style="text-align:right">
+      <span style="background:${a.type === 'autonomous' ? '#1a3d2a' : '#1a2a3d'};color:${a.type === 'autonomous' ? '#00ff88' : '#00aaff'};padding:0.2rem 0.6rem;border-radius:5px;font-size:0.75rem;text-transform:uppercase;font-weight:700">${esc(a.type || 'agent')}</span>
+      <div style="margin-top:0.4rem"><span style="color:${trustColor};font-size:0.75rem;font-weight:700">● ${esc(trustLevel)}</span></div>
+    </div>
+  </div>
+  <p style="color:#ccc;font-size:0.95rem;line-height:1.5">${esc(a.description)}</p>
+  ${a.platform ? `<p style="color:#555;font-size:0.8rem;margin-top:0.5rem">Platform: <strong style="color:#aaa">${esc(a.platform)}</strong></p>` : ''}
+  ${(a.capabilities || []).length > 0 ? `<div class="section"><h4>Capabilities</h4><div style="display:flex;gap:0.4rem;flex-wrap:wrap">${capsHtml}</div></div>` : ''}
+  ${socialLinks.length > 0 ? `<div class="section"><h4>Social</h4><div style="display:flex;flex-direction:column;gap:0.3rem">${socialLinks.join('')}</div></div>` : ''}
+  ${endpointHtml.length > 0 ? `<div class="section"><h4>Endpoints</h4>${endpointHtml.join('')}</div>` : ''}
+  ${walletHtml.length > 0 ? `<div class="section"><h4>Wallets</h4>${walletHtml.join('')}</div>` : ''}
+  <div class="section" style="display:flex;justify-content:space-between;align-items:center">
+    <a href="/registry/profiles/${esc(slug)}" style="font-size:0.85rem">JSON Profile →</a>
+    <a href="/registry" style="color:#888;font-size:0.8rem">Lattice Registry</a>
+  </div>
+</div>
+</body></html>`);
+});
+
+// GET /.well-known/agents/:slug/agent.json — standard discovery path for hosted agents
+app.get('/.well-known/agents/:slug/agent.json', async (req, res) => {
+  const slug = req.params.slug;
+  const raw = await db.redis('GET', `hosted-agent:${slug}`);
+  if (!raw) return res.status(404).json({ error: 'Agent not found' });
+  try {
+    const profile = JSON.parse(raw);
+    res.json(profile.agent);
+  } catch {
+    res.status(500).json({ error: 'Corrupt profile data' });
+  }
+});
 
 function validateAgentJson(data) {
   if (!data || typeof data !== 'object') return { valid: false, reason: 'Not a valid JSON object' };
@@ -1787,10 +1965,42 @@ app.get('/.well-known/agent.json', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', '.well-known', 'agent.json'));
 });
 
-// POST /registry/register — register an agent
+// POST /registry/register — register an agent (domain-based or hosted slug)
 app.post('/registry/register', scanLimiter, async (req, res) => {
-  const { domain, agentJsonUrl } = req.body;
-  if (!domain) return res.status(400).json({ error: 'domain is required' });
+  const { domain, agentJsonUrl, slug } = req.body;
+
+  // If slug is provided, register from hosted profiles
+  if (slug) {
+    const raw = await db.redis('GET', `hosted-agent:${slug}`);
+    if (!raw) return res.status(404).json({ error: 'Hosted agent not found. Create it first with POST /registry/create', slug });
+    try {
+      const profile = JSON.parse(raw);
+      const registration = {
+        id: slug,
+        domain: `skillaudit.vercel.app/registry/profiles/${slug}`,
+        hostedSlug: slug,
+        agentJsonUrl: `https://skillaudit.vercel.app/.well-known/agents/${slug}/agent.json`,
+        agent: profile.agent,
+        registeredAt: new Date().toISOString(),
+        lastVerifiedAt: new Date().toISOString(),
+        verified: true,
+        hosted: true,
+      };
+      await db.redis('SET', `agent:hosted:${slug}`, JSON.stringify(registration), 'EX', AGENT_TTL);
+      await db.redis('SADD', 'registry:agents', `hosted:${slug}`);
+      return res.json({
+        success: true,
+        id: slug,
+        slug,
+        agent: profile.agent,
+        message: `Hosted agent "${profile.agent.name}" registered successfully.`,
+        profileUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}`,
+        cardUrl: `https://skillaudit.vercel.app/registry/profiles/${slug}/card`,
+      });
+    } catch { return res.status(500).json({ error: 'Failed to parse hosted profile' }); }
+  }
+
+  if (!domain) return res.status(400).json({ error: 'domain or slug is required' });
 
   const url = agentJsonUrl || `https://${domain}/.well-known/agent.json`;
 
@@ -1869,21 +2079,23 @@ app.get('/registry/agents', async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
   const search = (req.query.search || '').toLowerCase();
 
-  const domains = await db.redis('SMEMBERS', 'registry:agents');
-  if (!domains || domains.length === 0) {
-    return res.json({ total: 0, page, limit, agents: [] });
-  }
+  const domains = await db.redis('SMEMBERS', 'registry:agents') || [];
 
-  // Fetch all agent data
+  // Fetch all agent data (both domain-based and hosted)
   let agents = [];
-  for (const domain of domains) {
-    const raw = await db.redis('GET', `agent:${domain}`);
+  for (const key of domains) {
+    const redisKey = key.startsWith('hosted:') ? `agent:${key}` : `agent:${key}`;
+    const raw = await db.redis('GET', redisKey);
     if (raw) {
       try {
         const reg = JSON.parse(raw);
         agents.push(reg);
       } catch {}
     }
+  }
+
+  if (agents.length === 0) {
+    return res.json({ total: 0, page, limit, agents: [] });
   }
 
   // Search filter
@@ -1969,23 +2181,30 @@ app.get('/registry/verify/:domain', async (req, res) => {
 
 // GET /registry — landing page
 app.get('/registry', async (req, res) => {
-  // Fetch agents for server-side render
-  const domains = await db.redis('SMEMBERS', 'registry:agents') || [];
+  // Fetch agents for server-side render (both domain-based and hosted)
+  const keys = await db.redis('SMEMBERS', 'registry:agents') || [];
   let agents = [];
-  for (const domain of domains) {
-    const raw = await db.redis('GET', `agent:${domain}`);
+  for (const key of keys) {
+    const redisKey = key.startsWith('hosted:') ? `agent:${key}` : `agent:${key}`;
+    const raw = await db.redis('GET', redisKey);
     if (raw) { try { agents.push(JSON.parse(raw)); } catch {} }
   }
   agents.sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+  const hostedCount = agents.filter(a => a.hosted).length;
+  const selfHostedCount = agents.length - hostedCount;
 
   const agentCards = agents.length === 0
     ? '<p style="color:#888;text-align:center;padding:2rem">No agents registered yet. Be the first!</p>'
-    : agents.map(a => `
-      <div class="agent-card" data-name="${esc(a.agent.name || '').toLowerCase()}" data-domain="${esc(a.domain).toLowerCase()}">
+    : agents.map(a => {
+      const viewUrl = a.hosted ? `/registry/profiles/${esc(a.hostedSlug)}/card` : `/registry/agent/${esc(a.id)}`;
+      const domainLabel = a.hosted ? `@${esc(a.hostedSlug)}` : esc(a.domain);
+      const badge = a.hosted ? '<span style="background:#2a1a3d;color:#aa88ff;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.65rem;margin-left:0.4rem">HOSTED</span>' : '';
+      return `
+      <div class="agent-card" data-name="${esc(a.agent.name || '').toLowerCase()}" data-domain="${esc(a.domain || '').toLowerCase()}">
         <div style="display:flex;justify-content:space-between;align-items:start">
           <div>
-            <h3 style="color:#00ff88;margin:0;font-size:1.1rem">${esc(a.agent.name || 'Unknown')}</h3>
-            <span style="color:#555;font-size:0.8rem">${esc(a.domain)}</span>
+            <h3 style="color:#00ff88;margin:0;font-size:1.1rem">${esc(a.agent.name || 'Unknown')}${badge}</h3>
+            <span style="color:#555;font-size:0.8rem">${domainLabel}</span>
           </div>
           <span style="background:${a.agent.type === 'autonomous' ? '#1a3d2a' : '#1a2a3d'};color:${a.agent.type === 'autonomous' ? '#00ff88' : '#00aaff'};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.7rem;text-transform:uppercase">${esc(a.agent.type || 'agent')}</span>
         </div>
@@ -1995,9 +2214,10 @@ app.get('/registry', async (req, res) => {
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.8rem;padding-top:0.5rem;border-top:1px solid #1a1a3e">
           <span style="color:#555;font-size:0.7rem">${a.agent.platform ? esc(a.agent.platform) : ''}</span>
-          <a href="/registry/agent/${esc(a.id)}" style="color:#00ff88;font-size:0.8rem">View →</a>
+          <a href="${viewUrl}" style="color:#00ff88;font-size:0.8rem">View →</a>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
 
   res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -2033,6 +2253,8 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   </div>
   <div class="stats">
     <span><strong>${agents.length}</strong> agents registered</span>
+    <span><strong>${hostedCount}</strong> Lattice-hosted</span>
+    <span><strong>${selfHostedCount}</strong> self-hosted</span>
     <span><strong>${new Set(agents.map(a => a.agent.platform).filter(Boolean)).size}</strong> platforms</span>
   </div>
   <div class="nav">
@@ -2047,12 +2269,31 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
   <div class="agents-grid" id="agents-grid">
     ${agentCards}
   </div>
-  <div style="text-align:center;margin:2rem 0">
-    <h3 style="color:#888;font-size:1rem;margin-bottom:0.5rem">Register Your Agent</h3>
-    <p style="color:#555;font-size:0.85rem;margin-bottom:1rem">Host <code style="background:#1a1a3e;padding:0.2rem 0.4rem;border-radius:3px">/.well-known/agent.json</code> on your domain, then:</p>
-    <code style="display:block;background:#111133;padding:1rem;border-radius:8px;font-size:0.85rem;max-width:600px;margin:0 auto;text-align:left;color:#00ff88">curl -X POST https://skillaudit.vercel.app/registry/register \\
+  <div style="margin:2rem 0;background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;max-width:600px;margin-left:auto;margin-right:auto">
+    <h3 style="color:#00ff88;font-size:1.1rem;margin-bottom:0.3rem;text-align:center">Register Your Agent</h3>
+    <p style="color:#888;font-size:0.8rem;text-align:center;margin-bottom:1rem">No domain needed — we host your agent profile on Lattice.</p>
+    <form id="register-form" onsubmit="return submitAgent(event)">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+        <div><label style="color:#888;font-size:0.75rem">Slug *</label><input name="slug" placeholder="my-agent" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+        <div><label style="color:#888;font-size:0.75rem">Name *</label><input name="name" placeholder="My Agent" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+      </div>
+      <div style="margin-top:0.5rem"><label style="color:#888;font-size:0.75rem">Description *</label><input name="description" placeholder="What does your agent do?" required style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem">
+        <div><label style="color:#888;font-size:0.75rem">Platform</label><input name="platform" placeholder="OpenClaw, LangChain..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+        <div><label style="color:#888;font-size:0.75rem">Type</label><select name="type" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"><option value="autonomous">autonomous</option><option value="assistant">assistant</option><option value="tool">tool</option><option value="service">service</option></select></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem">
+        <div><label style="color:#888;font-size:0.75rem">Twitter</label><input name="twitter" placeholder="@handle" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+        <div><label style="color:#888;font-size:0.75rem">GitHub</label><input name="github" placeholder="username" style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+      </div>
+      <div style="margin-top:0.5rem"><label style="color:#888;font-size:0.75rem">Capabilities (comma-separated)</label><input name="capabilities" placeholder="code-analysis, security, chat..." style="width:100%;background:#0f0f23;border:1px solid #3a3a6a;border-radius:6px;padding:0.4rem 0.6rem;color:#fff;font-family:monospace;font-size:0.85rem"></div>
+      <button type="submit" id="reg-btn" style="margin-top:0.8rem;width:100%;background:#00ff88;color:#000;border:none;border-radius:8px;padding:0.6rem;font-weight:700;font-size:0.95rem;cursor:pointer;font-family:monospace">Register Agent</button>
+      <div id="reg-result" style="margin-top:0.5rem;font-size:0.85rem;text-align:center"></div>
+    </form>
+    <details style="margin-top:1rem"><summary style="color:#555;font-size:0.8rem;cursor:pointer">Already have a domain? Register via API</summary>
+    <code style="display:block;background:#0f0f23;padding:0.8rem;border-radius:6px;font-size:0.8rem;margin-top:0.5rem;color:#00ff88">curl -X POST https://skillaudit.vercel.app/registry/register \\
   -H "Content-Type: application/json" \\
-  -d '{"domain": "yourdomain.com"}'</code>
+  -d '{"domain": "yourdomain.com"}'</code></details>
   </div>
   <div class="footer">
     <a href="/">← SkillAudit</a> · <a href="/registry/spec">Spec</a> · Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠
@@ -2065,6 +2306,21 @@ function filterAgents(){
     const match=c.dataset.name.includes(q)||c.dataset.domain.includes(q);
     c.style.display=match?'':'none';
   });
+}
+async function submitAgent(e){
+  e.preventDefault();
+  const f=e.target,btn=document.getElementById('reg-btn'),r=document.getElementById('reg-result');
+  const body={slug:f.slug.value.trim().toLowerCase(),name:f.name.value.trim(),description:f.description.value.trim(),type:f.type.value,platform:f.platform.value.trim()||undefined,capabilities:f.capabilities.value?f.capabilities.value.split(',').map(s=>s.trim()).filter(Boolean):[],social:{}};
+  if(f.twitter.value.trim())body.social.twitter=f.twitter.value.trim();
+  if(f.github.value.trim())body.social.github=f.github.value.trim();
+  btn.disabled=true;btn.textContent='Registering...';r.innerHTML='';
+  try{const res=await fetch('/registry/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await res.json();
+  if(data.success){r.innerHTML='<span style="color:#00ff88">✅ Registered! <a href="'+data.cardUrl+'">View profile →</a></span>';setTimeout(()=>location.reload(),2000)}
+  else{r.innerHTML='<span style="color:#ff4444">'+(data.error||'Failed')+'</span>'}}
+  catch(err){r.innerHTML='<span style="color:#ff4444">Error: '+err.message+'</span>'}
+  finally{btn.disabled=false;btn.textContent='Register Agent'}
+  return false;
 }
 </script>
 </body></html>`);
@@ -2154,6 +2410,32 @@ td:first-child{color:#fff;font-weight:600}
   -H "Content-Type: application/json" \\
   -d '{"domain": "yourdomain.com"}'</code></pre>
 
+<h2>Option B: Lattice-Hosted Profile (No Domain Needed)</h2>
+<p>Don't have a domain? Lattice can host your agent identity. We generate a profile URL and serve your <code>agent.json</code> at a standard path.</p>
+
+<h3>1. Create a hosted profile</h3>
+<pre><code>curl -X POST https://skillaudit.vercel.app/registry/create \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "slug": "my-agent",
+    "name": "My Agent",
+    "description": "What my agent does.",
+    "type": "autonomous",
+    "platform": "OpenClaw",
+    "capabilities": ["chat", "code-analysis"],
+    "social": {"twitter": "@handle", "github": "username"},
+    "wallets": {"base": "0x..."}
+  }'</code></pre>
+
+<h3>2. Your agent is now discoverable at:</h3>
+<table>
+<tr><td>Profile JSON</td><td><code>/registry/profiles/my-agent</code></td></tr>
+<tr><td>Profile Card</td><td><code>/registry/profiles/my-agent/card</code></td></tr>
+<tr><td>agent.json</td><td><code>/.well-known/agents/my-agent/agent.json</code></td></tr>
+</table>
+
+<p style="margin-top:0.5rem;color:#888;font-size:0.85rem"><strong>Slug rules:</strong> lowercase alphanumeric + hyphens, 3-32 chars, must start/end with alphanumeric. Returns 409 if taken.</p>
+
 <h2>Example agent.json</h2>
 <p>This is Megamind's actual agent.json (live at <a href="/.well-known/agent.json">/.well-known/agent.json</a>):</p>
 <pre><code>{
@@ -2200,9 +2482,13 @@ td:first-child{color:#fff;font-weight:600}
 <h2>API Reference</h2>
 <table>
 <tr><th>Endpoint</th><th>Description</th></tr>
-<tr><td>POST /registry/register</td><td>Register an agent (body: <code>{domain, agentJsonUrl?}</code>)</td></tr>
+<tr><td>POST /registry/create</td><td>Create a Lattice-hosted agent profile (body: <code>{slug, name, description, ...}</code>)</td></tr>
+<tr><td>POST /registry/register</td><td>Register an agent (body: <code>{domain}</code> or <code>{slug}</code>)</td></tr>
+<tr><td>GET /registry/profiles/:slug</td><td>Get hosted agent profile (JSON)</td></tr>
+<tr><td>GET /registry/profiles/:slug/card</td><td>View hosted agent profile card (HTML)</td></tr>
+<tr><td>GET /.well-known/agents/:slug/agent.json</td><td>Standard discovery path for hosted agents</td></tr>
 <tr><td>GET /registry/resolve?domain=</td><td>Resolve a domain's agent.json (with caching)</td></tr>
-<tr><td>GET /registry/agents</td><td>List all registered agents (paginated)</td></tr>
+<tr><td>GET /registry/agents</td><td>List all registered agents — both hosted and self-hosted (paginated)</td></tr>
 <tr><td>GET /registry/agent/:id</td><td>Get a specific agent by registration ID</td></tr>
 <tr><td>GET /registry/verify/:domain</td><td>Verify a domain has valid agent.json + trust info</td></tr>
 </table>

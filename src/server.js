@@ -2363,6 +2363,25 @@ app.post('/registry/crawl', async (req, res) => {
     return res.status(403).json({ error: 'Admin key required. Pass X-Admin-Key header or admin_key in body.' });
   }
   try {
+    // If force=true, clear existing crawler tools first
+    if (req.body.force || req.query.force === 'true') {
+      const toolSlugs = await db.redis('SMEMBERS', 'registry:hosted-tools') || [];
+      let cleared = 0;
+      for (const slug of toolSlugs) {
+        const raw = await db.redis('GET', `hosted-tool:${slug}`);
+        if (raw) {
+          try {
+            const profile = JSON.parse(raw);
+            if (profile.source === 'crawler') {
+              await db.redis('DEL', `hosted-tool:${slug}`);
+              await db.redis('SREM', 'registry:hosted-tools', slug);
+              cleared++;
+            }
+          } catch {}
+        }
+      }
+      console.log(`[crawl] Force mode: cleared ${cleared} old crawler tools`);
+    }
     const stats = await runCrawl();
     res.json({
       success: true,

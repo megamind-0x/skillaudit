@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { scanContent } = require('./scanner');
 const { SECRET_DETECTORS } = require('./secrets');
+const trust = require('./trust');
 const { verifyPayment } = require('./verify-payment');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -2089,6 +2090,74 @@ app.get('/.well-known/agents/:slug/agent.json', async (req, res) => {
   }
 });
 
+// --- Crawler Endpoints ---
+const { runCrawl } = require('./crawler');
+const ADMIN_KEY = process.env.ADMIN_KEY || 'lattice-admin-2026';
+
+// POST /registry/crawl — trigger a crawl run (admin-protected)
+app.post('/registry/crawl', async (req, res) => {
+  const key = req.headers['x-admin-key'] || req.body.admin_key || req.query.admin_key;
+  if (key !== ADMIN_KEY) {
+    return res.status(403).json({ error: 'Admin key required. Pass X-Admin-Key header or admin_key in body.' });
+  }
+  try {
+    const stats = await runCrawl();
+    res.json({
+      success: true,
+      message: `Crawl complete. ${stats.registered} new agents discovered.`,
+      stats,
+    });
+  } catch (err) {
+    res.status(500).json({ error: `Crawl failed: ${err.message}` });
+  }
+});
+
+// GET /registry/stats — registry statistics
+app.get('/registry/stats', async (req, res) => {
+  // Count hosted agents
+  const hostedSlugs = await db.redis('SMEMBERS', 'registry:hosted-agents');
+  const allAgentKeys = await db.redis('SMEMBERS', 'registry:agents');
+  const hostedCount = hostedSlugs ? hostedSlugs.length : 0;
+  const totalAgents = allAgentKeys ? allAgentKeys.length : 0;
+  const selfHostedCount = totalAgents - hostedCount;
+
+  // Source breakdown from crawled agents
+  const sourceBreakdown = { manual: 0, crawler: 0, moltbook: 0, 'mcp.so': 0, smithery: 0 };
+  if (hostedSlugs) {
+    for (const slug of hostedSlugs) {
+      const raw = await db.redis('GET', `hosted-agent:${slug}`);
+      if (raw) {
+        try {
+          const profile = JSON.parse(raw);
+          if (profile.source === 'crawler') {
+            sourceBreakdown.crawler++;
+            if (profile.sourceId) sourceBreakdown[profile.sourceId] = (sourceBreakdown[profile.sourceId] || 0) + 1;
+          } else {
+            sourceBreakdown.manual++;
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // Last crawl info
+  const lastCrawlRun = await db.redis('GET', 'crawler:last_run');
+  let lastCrawlStats = null;
+  const rawStats = await db.redis('GET', 'crawler:stats');
+  if (rawStats) { try { lastCrawlStats = JSON.parse(rawStats); } catch {} }
+
+  res.json({
+    totalAgents,
+    hosted: hostedCount,
+    selfHosted: selfHostedCount,
+    sourceBreakdown,
+    lastCrawl: {
+      at: lastCrawlRun || null,
+      stats: lastCrawlStats,
+    },
+  });
+});
+
 function validateAgentJson(data) {
   if (!data || typeof data !== 'object') return { valid: false, reason: 'Not a valid JSON object' };
   if (!data.name || typeof data.name !== 'string') return { valid: false, reason: 'Missing or invalid "name" field' };
@@ -2697,6 +2766,35 @@ await fetch('https://skillaudit.vercel.app/registry/create', {
 </div>
 </div>
 </body></html>`);
+});
+
+// --- Trust Score Badge ---
+app.get('/registry/badge/:slug', async (req, res) => {
+  const slug = req.params.slug.replace(/\.svg$/, '');
+  const trustData = await trust.getTrustScore(slug);
+  const score = trustData ? trustData.score : 0;
+  const level = trustData ? trustData.level : 'Unverified';
+  res.type('image/svg+xml').header('Cache-Control', 'public, max-age=300').send(trust.renderTrustBadgeSvg(score, level));
+});
+
+// --- Trust Score API ---
+app.get('/registry/trust/:slug', async (req, res) => {
+  const slug = req.params.slug;
+  const trustData = await trust.getTrustScore(slug);
+  if (!trustData) return res.json({ slug, score: 0, level: 'Unverified', message: 'No trust data. Agent may not have been scanned yet.' });
+  res.json({ slug, ...trustData });
+});
+
+// --- Rescan trust score ---
+app.post('/registry/trust/:slug/rescan', scanLimiter, async (req, res) => {
+  const slug = req.params.slug;
+  const raw = await db.redis('GET', `hosted-agent:${slug}`);
+  if (!raw) return res.status(404).json({ error: 'Agent not found' });
+  let profile;
+  try { profile = JSON.parse(raw); } catch { return res.status(500).json({ error: 'Corrupt profile' }); }
+  const domain = profile.agent?.endpoints?.api ? getDomain(profile.agent.endpoints.api) : null;
+  const trustData = await trust.backgroundTrustScan(slug, profile.agent, profile.createdAt, domain);
+  res.json({ slug, ...trustData });
 });
 
 // --- MCP Streamable HTTP Transport ---

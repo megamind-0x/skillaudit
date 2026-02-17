@@ -1,5 +1,21 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-17 (7:00 AM) — SARIF v2.1.0 Output (Industry-Standard Security Format)
+**What:** Full SARIF (Static Analysis Results Interchange Format) v2.1.0 support — the universal language for security scanners.
+**Endpoints:**
+- `GET /scan/:id/sarif` — Get any existing scan result in SARIF format
+- `GET /scan/quick?url=...&format=sarif` — Scan and return SARIF directly
+- `POST /scan/url` with `format: "sarif"` — Same for POST scans
+- `POST /scan/content` with `format: "sarif"` — Same for content scans
+**SARIF features:**
+- Full v2.1.0 compliance: `$schema`, versioned runs, typed rules, located results
+- Security-severity scores (CVSS-like 0-10 scale) on every rule — GitHub Code Scanning uses this for prioritization
+- Suppression tracking: documentation-context findings marked with `suppressions[].kind: "inSource"`
+- Content hashes (SHA-256) in artifacts for tamper detection
+- Threat chain metadata preserved in result properties
+- Invocation properties include SkillAudit-specific data (riskLevel, riskScore, verdict, reportUrl)
+**Why:** SARIF is THE standard. GitHub Code Scanning consumes it natively (upload via `github/codeql-action/upload-sarif`), VS Code has a SARIF Viewer extension, Azure DevOps pipelines understand it, and every security aggregation platform speaks it. Before this, SkillAudit results were locked in our own format — now they plug into the entire security tooling ecosystem. This means: (1) GitHub repos can show SkillAudit findings in the Security tab alongside CodeQL, (2) VS Code can display findings inline, (3) security dashboards can aggregate SkillAudit with other scanners. That's interoperability. That's infrastructure.
+
 ## 2026-02-17 (1:00 AM) — Signed Audit Certificates
 **What:** Cryptographically signed certificates that prove a skill was audited by SkillAudit.
 **Endpoints:**

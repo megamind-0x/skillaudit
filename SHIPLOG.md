@@ -1,5 +1,20 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-18 (10:00 AM) — Live Threat Dashboard
+**What:** `GET /dashboard` — a public-facing, real-time threat intelligence dashboard for the AI skill ecosystem.
+**Features:**
+- Dark-themed, responsive UI that auto-refreshes every 60 seconds
+- KPI cards: total scans, clean rate percentage, recent threats count, flagged domains count
+- Risk distribution bar chart showing clean/low/moderate/high/critical breakdown with counts
+- Recent threats feed with severity badges, rule names, source domains, and relative timestamps
+- Top detection rules (all-time) with hit counts and visual bar charts
+- Trending rules (today) showing what's being detected right now
+- Flagged domains list with color-coded risk indicators
+- Fully client-side — fetches from `/stats`, `/feed`, `/feed/domains`, `/feed/rules` APIs
+- Mobile-friendly responsive grid layout
+- Added link from landing page footer
+**Why:** SkillAudit had powerful APIs but no public face for the threat data. Security platforms need dashboards — it's how you build credibility, get shared on social media, and show the ecosystem you're real. Think GitHub's security advisories page or VirusTotal's stats. This makes SkillAudit *visible*. When someone asks "what threats are out there in the MCP ecosystem?" the answer is now a URL: `skillaudit.vercel.app/dashboard`. That's how you become infrastructure people talk about.
+
 ## 2026-02-18 (7:00 AM) — Dependency Tree Scanner (Supply Chain Security)
 **What:** `POST /scan/deps` — paste your package.json, get a full supply chain risk report for ALL your dependencies.
 **How it works:**

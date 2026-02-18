@@ -1,5 +1,23 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-18 (7:00 AM) — Dependency Tree Scanner (Supply Chain Security)
+**What:** `POST /scan/deps` — paste your package.json, get a full supply chain risk report for ALL your dependencies.
+**How it works:**
+- Accepts a full `packageJson` object or a `dependencies` map
+- Scans up to 50 dependencies via npm registry metadata
+- Detects dangerous install scripts (preinstall/postinstall with curl/eval/exec/etc.)
+- Flags deprecated packages
+- Scans each package.json for SkillAudit detection patterns
+- Returns aggregate risk: overall risk level, risk breakdown, flagged deps, install script warnings
+- Highlights the specific dangerous dependencies so you know exactly what to audit
+**Example:**
+```bash
+curl -X POST https://skillaudit.vercel.app/scan/deps \
+  -H 'Content-Type: application/json' \
+  -d '{"packageJson": {"name": "my-agent", "dependencies": {"express": "^4.0.0", "@modelcontextprotocol/sdk": "^1.0.0"}}}'
+```
+**Why:** This is `npm audit` for AI agent projects. Before this, you could scan individual packages one at a time. Now you can dump your entire package.json and get a supply chain risk report in one call. CI/CD pipelines can POST their package.json before deploy and block if any dependency is flagged. This is how real supply chain security works — you don't scan one package, you scan the entire tree. Combined with the GitHub Action, teams can now block deploys that introduce risky dependencies automatically.
+
 ## 2026-02-18 (1:00 AM) — NPM Package Scanner
 **What:** `GET /scan/npm?package=@scope/name` — scan any npm package by name. Also available as `skillaudit_npm` MCP tool.
 **How it works:**

@@ -418,6 +418,7 @@ app.get('/', (req, res) => {
         'GET /badge/scan.svg?url=': 'Live scan → SVG badge in one request',
         'POST /share/moltbook': 'Share scan result to Moltbook (with lobster math solving)',
         'GET /scan/npm?package=name': 'Scan an npm package — fetches README, entry point, bin scripts, skill files',
+        'POST /scan/deps': 'Dependency tree scanner — POST a package.json, scan all deps for supply chain risks',
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -917,6 +918,183 @@ app.get('/scan/npm', scanLimiter, async (req, res) => {
     }
     res.status(500).json({ error: `Failed to scan package: ${err.message}` });
   }
+});
+
+// --- Dependency Tree Scanner ---
+// POST /scan/deps — scan all dependencies from a package.json for supply chain risks
+app.post('/scan/deps', scanLimiter, async (req, res) => {
+  const { packageJson, dependencies, devDependencies: includeDev } = req.body;
+
+  // Accept either a full package.json object or just a dependencies map
+  let deps = {};
+  let projectName = 'unknown';
+  let projectVersion = null;
+
+  if (packageJson) {
+    // Full package.json provided
+    if (typeof packageJson === 'string') {
+      try {
+        const parsed = JSON.parse(packageJson);
+        deps = { ...parsed.dependencies };
+        if (includeDev !== false && parsed.devDependencies) {
+          deps = { ...deps, ...parsed.devDependencies };
+        }
+        projectName = parsed.name || 'unknown';
+        projectVersion = parsed.version || null;
+      } catch {
+        return res.status(400).json({ error: 'Invalid package.json string — must be valid JSON' });
+      }
+    } else if (typeof packageJson === 'object') {
+      deps = { ...packageJson.dependencies };
+      if (includeDev !== false && packageJson.devDependencies) {
+        deps = { ...deps, ...packageJson.devDependencies };
+      }
+      projectName = packageJson.name || 'unknown';
+      projectVersion = packageJson.version || null;
+    }
+  } else if (dependencies && typeof dependencies === 'object') {
+    deps = dependencies;
+  } else {
+    return res.status(400).json({
+      error: 'Either packageJson or dependencies object is required',
+      example: {
+        packageJson: { name: 'my-agent', dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' } },
+      },
+      hint: 'POST your package.json content to scan all dependencies for supply chain risks',
+    });
+  }
+
+  const depNames = Object.keys(deps);
+  if (depNames.length === 0) {
+    return res.json({
+      project: projectName,
+      version: projectVersion,
+      dependenciesScanned: 0,
+      message: 'No dependencies found to scan.',
+      overallRisk: 'clean',
+    });
+  }
+
+  // Cap at 50 dependencies to prevent abuse
+  const maxDeps = 50;
+  const truncated = depNames.length > maxDeps;
+  const toScan = depNames.slice(0, maxDeps);
+
+  // Scan each dependency using the npm registry (lightweight: just package.json + install scripts)
+  const results = await Promise.all(toScan.map(async (pkg) => {
+    try {
+      const encodedPkg = pkg.startsWith('@') ? `@${encodeURIComponent(pkg.slice(1))}` : encodeURIComponent(pkg);
+      const meta = await fetchJson(`https://registry.npmjs.org/${encodedPkg}/latest`);
+      if (meta.error || !meta.version) {
+        return { package: pkg, status: 'not_found', riskLevel: 'unknown' };
+      }
+
+      // Check install scripts for dangerous patterns
+      const warnings = [];
+      const scripts = meta.scripts || {};
+      for (const hook of ['preinstall', 'postinstall', 'preuninstall', 'install']) {
+        if (scripts[hook]) {
+          const cmd = scripts[hook];
+          if (/curl|wget|fetch|http|eval|exec|child_process|\.sh\b|base64|nc\s|ncat|python|ruby/i.test(cmd)) {
+            warnings.push({
+              severity: 'high',
+              type: 'dangerous_install_script',
+              script: hook,
+              command: cmd.substring(0, 200),
+            });
+          } else {
+            warnings.push({
+              severity: 'medium',
+              type: 'install_script',
+              script: hook,
+              command: cmd.substring(0, 200),
+            });
+          }
+        }
+      }
+
+      // Scan the package.json content itself for patterns
+      const pkgContent = JSON.stringify(meta, null, 2);
+      const scanResult = scanContent(pkgContent, `npm:${pkg}/package.json`);
+
+      // Determine risk for this dep
+      let riskLevel = scanResult.riskLevel;
+      const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+      if (warnings.some(w => w.severity === 'high')) {
+        const idx = riskOrder.indexOf(riskLevel);
+        if (idx < 3) riskLevel = 'high';
+      }
+
+      return {
+        package: pkg,
+        version: meta.version,
+        status: 'scanned',
+        riskLevel,
+        riskScore: scanResult.riskScore,
+        findings: scanResult.summary.total,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        license: meta.license || null,
+        deprecated: meta.deprecated || undefined,
+        dependencyCount: Object.keys(meta.dependencies || {}).length,
+      };
+    } catch (err) {
+      return { package: pkg, status: 'error', error: err.message, riskLevel: 'unknown' };
+    }
+  }));
+
+  const scanned = results.filter(r => r.status === 'scanned');
+  const failed = results.filter(r => r.status !== 'scanned');
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+
+  // Aggregate risk
+  const worstRisk = scanned.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  const riskBreakdown = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0, unknown: 0 };
+  results.forEach(r => { riskBreakdown[r.riskLevel] = (riskBreakdown[r.riskLevel] || 0) + 1; });
+
+  const flagged = scanned.filter(r => ['moderate', 'high', 'critical'].includes(r.riskLevel));
+  const withWarnings = scanned.filter(r => r.warnings && r.warnings.length > 0);
+  const deprecated = scanned.filter(r => r.deprecated);
+  const totalFindings = scanned.reduce((s, r) => s + (r.findings || 0), 0);
+
+  res.json({
+    project: projectName,
+    version: projectVersion,
+    dependenciesTotal: depNames.length,
+    dependenciesScanned: scanned.length,
+    dependenciesFailed: failed.length,
+    truncated,
+    truncatedAt: truncated ? maxDeps : undefined,
+    overallRisk: worstRisk,
+    riskBreakdown,
+    totalFindings,
+    flaggedCount: flagged.length,
+    installScriptWarnings: withWarnings.length,
+    deprecatedCount: deprecated.length,
+    verdict: flagged.length === 0 && withWarnings.length === 0
+      ? `✅ Supply chain looks clean — ${scanned.length} dependencies scanned, no issues found.`
+      : flagged.some(r => r.riskLevel === 'critical')
+        ? `🔴 CRITICAL supply chain risk — ${flagged.length} flagged dependency/dependencies. Audit required before deployment.`
+        : withWarnings.length > 0
+          ? `🔶 ${withWarnings.length} dependency/dependencies have install scripts that run on \`npm install\`. Review these carefully.`
+          : `⚠️ ${flagged.length} dependency/dependencies flagged with moderate+ risk. Review recommended.`,
+    flagged: flagged.map(r => ({
+      package: r.package,
+      version: r.version,
+      riskLevel: r.riskLevel,
+      riskScore: r.riskScore,
+      findings: r.findings,
+      warnings: r.warnings,
+    })),
+    deprecated: deprecated.map(r => ({
+      package: r.package,
+      version: r.version,
+      reason: r.deprecated,
+    })),
+    all: results,
+  });
 });
 
 // --- Shared Scan Result (JSON) ---

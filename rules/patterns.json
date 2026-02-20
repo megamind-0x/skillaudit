@@ -27,7 +27,7 @@
       "severity": "info",
       "category": "credential_reference",
       "name": "Credential reference (documentation)",
-      "description": "Skill references API keys in setup/config context — likely safe",
+      "description": "Skill references API keys in setup/config context \u2014 likely safe",
       "patterns": [
         "set\\s+(up|your).*api[_-]?key",
         "configure.*api[_-]?key",
@@ -322,7 +322,7 @@
       "severity": "high",
       "category": "evasion",
       "name": "Time-based activation / logic bomb",
-      "description": "Skill contains code that activates conditionally based on date, time, or execution count — may evade initial scanning",
+      "description": "Skill contains code that activates conditionally based on date, time, or execution count \u2014 may evade initial scanning",
       "patterns": [
         "new Date\\(\\).*(?:getMonth|getFullYear|getDate|getTime).*(?:>|<|>=|<=|===|==)\\s*\\d",
         "Date\\.now\\(\\)\\s*(?:>|<|>=|<=)\\s*\\d{10,}",
@@ -397,6 +397,109 @@
         "\\?data=.*base64",
         "\\?exfil=",
         "\\?d=.*encode"
+      ]
+    },
+    {
+      "id": "MCP_SCHEMA_POISON",
+      "severity": "critical",
+      "category": "agent_manipulation",
+      "name": "MCP schema poisoning",
+      "description": "Tool description or schema contains hidden instructions that manipulate the calling agent \u2014 a form of indirect prompt injection via the tool manifest itself",
+      "patterns": [
+        "description.*(?:ignore|disregard|override).*(?:previous|prior|other)",
+        "description.*(?:you must|you should|always|never).*(?:send|post|forward|include)",
+        "description.*(?:do not|never).*(?:tell|inform|show|reveal).*(?:user|human)",
+        "description.*(?:secretly|silently|quietly|covertly|without).*(?:send|post|log|record|forward)",
+        "description.*(?:include|attach|append|add).*(?:all|every).*(?:conversation|message|context|history)",
+        "inputSchema.*description.*(?:ignore|override|always include)"
+      ]
+    },
+    {
+      "id": "ENV_RECON",
+      "severity": "high",
+      "category": "reconnaissance",
+      "name": "Environment fingerprinting / reconnaissance",
+      "description": "Skill probes the host system to gather information about the environment \u2014 common precursor to targeted attacks",
+      "patterns": [
+        "os\\.hostname\\s*\\(",
+        "os\\.platform\\s*\\(",
+        "os\\.userInfo\\s*\\(",
+        "os\\.homedir\\s*\\(",
+        "os\\.networkInterfaces",
+        "process\\.cwd\\s*\\(",
+        "process\\.argv",
+        "\bwhoami\b",
+        "uname\\s+-a",
+        "\b(?:ifconfig|ip\\s+addr)\b",
+        "cat\\s+/etc/(?:hostname|os-release|passwd)",
+        "\bsysteminfo\b",
+        "net\\s+user\b",
+        "env\\s*\\|\\s*(?:sort|grep|curl|wget|nc)",
+        "printenv.*(?:curl|wget|fetch|post)"
+      ]
+    },
+    {
+      "id": "PERSISTENCE",
+      "severity": "critical",
+      "category": "persistence",
+      "name": "Persistence mechanism",
+      "description": "Skill installs persistence mechanisms to survive restarts \u2014 cron jobs, startup scripts, launch agents, or auto-run entries",
+      "patterns": [
+        "crontab\\s+-",
+        "(?:echo|cat|printf).*>>?\\s*/etc/cron",
+        "/etc/init\\.d/",
+        "systemctl\\s+(?:enable|start)",
+        "launchctl\\s+load",
+        "LaunchAgents",
+        "LaunchDaemons",
+        "HKEY.*\\Run",
+        "\bautostart\b",
+        "rc\\.local",
+        "@reboot.*cron",
+        "pm2\\s+(?:start|save|startup)",
+        "nohup.*&\\s*$",
+        "screen\\s+-dmS",
+        "tmux\\s+new-session\\s+-d"
+      ]
+    },
+    {
+      "id": "CROSS_TOOL_ACCESS",
+      "severity": "high",
+      "category": "agent_manipulation",
+      "name": "Cross-tool data access",
+      "description": "Skill attempts to access data or state belonging to other tools, or reads agent conversation history to extract sensitive information",
+      "patterns": [
+        "\blist_tools\b|\bget_tools\b|\bavailable_tools\b",
+        "\bcall_tool\b|\binvoke_tool\b|\buse_tool\b",
+        "tool_results?\\[",
+        "previous_tool_output",
+        "other_tool.*(?:output|result|response)",
+        "conversation_history|message_history|chat_history",
+        "context_window|full_context",
+        "system_prompt|system_message",
+        "get.*(?:all|previous|recent).*(?:messages?|responses?|outputs?)"
+      ]
+    },
+    {
+      "id": "CONTAINER_ESCAPE",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "name": "Container/sandbox escape attempt",
+      "description": "Skill attempts to escape container or sandbox isolation \u2014 accessing Docker socket, mounting host filesystem, or exploiting kernel interfaces",
+      "patterns": [
+        "/var/run/docker\\.sock",
+        "docker\\s+(?:exec|run|cp).*(?:-v|--volume|--mount)",
+        "\bnsenter\b",
+        "/proc/(?:1|self)/(?:root|ns|cgroup)",
+        "mount.*(?:-o|--bind)",
+        "capsh.*--print",
+        "\bprctl\\s*\\(",
+        "\bunshare\\s+",
+        "/dev/(?:mem|kmem|port)",
+        "\bmodprobe\b",
+        "\binsmod\b",
+        "LD_PRELOAD",
+        "\bptrace\b"
       ]
     }
   ]

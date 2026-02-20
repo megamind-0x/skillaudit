@@ -420,6 +420,7 @@ app.get('/', (req, res) => {
         'GET /scan/npm?package=name': 'Scan an npm package — fetches README, entry point, bin scripts, skill files',
         'POST /scan/deps': 'Dependency tree scanner — POST a package.json, scan all deps for supply chain risks',
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
+        'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
         'GET /feed': 'Threat intelligence feed — recent threats, flagged domains, trending rules',
@@ -1100,6 +1101,209 @@ app.post('/scan/deps', scanLimiter, async (req, res) => {
     })),
     all: results,
   });
+});
+
+// --- PyPI Package Scanner ---
+app.get('/scan/pypi', scanLimiter, async (req, res) => {
+  const pkg = req.query.package;
+  if (!pkg) {
+    return res.status(400).json({
+      error: 'package query parameter is required',
+      example: '/scan/pypi?package=mcp',
+      hint: 'Pass any PyPI package name',
+    });
+  }
+
+  try {
+    // Fetch package metadata from PyPI JSON API
+    const pypiMeta = await fetchJson(`https://pypi.org/pypi/${encodeURIComponent(pkg)}/json`);
+
+    if (pypiMeta.message === 'Not Found' || !pypiMeta.info) {
+      return res.status(404).json({ error: `Package not found on PyPI: ${pkg}`, hint: 'Check the package name and try again.' });
+    }
+
+    const info = pypiMeta.info;
+    const latest = info.version;
+    const pypiUrl = `https://pypi.org/project/${pkg}/`;
+
+    // Collect files to scan
+    const filesToScan = [];
+
+    // 1. README / description (PyPI provides it in info.description)
+    if (info.description && info.description.length > 50) {
+      filesToScan.push({ name: 'README', source: 'pypi-description', content: info.description });
+    }
+
+    // 2. Try to fetch source files from GitHub if project_urls or home_page points there
+    let githubRepo = null;
+    const projectUrls = { ...(info.project_urls || {}), homepage: info.home_page };
+    for (const [, url] of Object.entries(projectUrls)) {
+      if (!url) continue;
+      const ghMatch = url.match(/github\.com\/([^\/]+\/[^\/\s#?]+)/i);
+      if (ghMatch) {
+        githubRepo = ghMatch[1].replace(/\.git$/, '');
+        break;
+      }
+    }
+
+    // Fetch key files from GitHub if available
+    if (githubRepo) {
+      const ghFiles = ['setup.py', 'setup.cfg', 'pyproject.toml', 'SKILL.md', 'mcp.json'];
+      for (const file of ghFiles) {
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${githubRepo}/main/${file}`;
+          const content = await fetchUrl(rawUrl);
+          if (content && content.length > 10) {
+            filesToScan.push({ name: file, source: rawUrl, content });
+          }
+        } catch {
+          // Try master branch
+          try {
+            const rawUrl = `https://raw.githubusercontent.com/${githubRepo}/master/${file}`;
+            const content = await fetchUrl(rawUrl);
+            if (content && content.length > 10) {
+              filesToScan.push({ name: file, source: rawUrl, content });
+            }
+          } catch {}
+        }
+      }
+
+      // Try to find main module entry point (src/<pkg>/__init__.py or <pkg>/__init__.py)
+      const pkgDir = pkg.replace(/-/g, '_').toLowerCase();
+      for (const prefix of [`src/${pkgDir}`, pkgDir]) {
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${githubRepo}/main/${prefix}/__init__.py`;
+          const content = await fetchUrl(rawUrl);
+          if (content && content.length > 10) {
+            filesToScan.push({ name: `${prefix}/__init__.py`, source: rawUrl, content });
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Analyze package metadata itself for suspicious signals
+    const metaContent = JSON.stringify(info, null, 2);
+    filesToScan.push({ name: 'pypi-metadata.json', source: `pypi:${pkg}/metadata`, content: metaContent });
+
+    // Scan all collected files
+    const fileResults = filesToScan.map(file => {
+      const result = scanContent(file.content, file.source || `pypi:${pkg}/${file.name}`);
+      const id = recordScan(`pypi:${pkg}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // Check for suspicious setup.py patterns
+    const packageWarnings = [];
+    const setupFile = filesToScan.find(f => f.name === 'setup.py');
+    if (setupFile) {
+      const setupContent = setupFile.content;
+      const dangerousSetupPatterns = [
+        { pattern: /os\.system\s*\(/i, desc: 'os.system() call in setup.py' },
+        { pattern: /subprocess\.\w+\s*\(/i, desc: 'subprocess call in setup.py' },
+        { pattern: /exec\s*\(/i, desc: 'exec() call in setup.py' },
+        { pattern: /eval\s*\(/i, desc: 'eval() call in setup.py' },
+        { pattern: /urllib\.request|requests\.get|http\.client/i, desc: 'Network request in setup.py' },
+        { pattern: /base64\.b64decode/i, desc: 'Base64 decode in setup.py' },
+        { pattern: /compile|Extension\(.*sources/i, desc: 'Native code compilation in setup.py' },
+        { pattern: /cmdclass\s*=/i, desc: 'Custom install command class' },
+      ];
+      for (const dp of dangerousSetupPatterns) {
+        if (dp.pattern.test(setupContent)) {
+          const isCritical = /os\.system|subprocess|exec\(|eval\(|base64/.test(setupContent);
+          packageWarnings.push({
+            type: 'suspicious_setup_py',
+            severity: isCritical ? 'high' : 'medium',
+            description: dp.desc,
+          });
+        }
+      }
+    }
+
+    // Check classifiers for known concerning indicators
+    const classifiers = info.classifiers || [];
+    if (classifiers.some(c => /Development Status :: [12]/.test(c))) {
+      packageWarnings.push({ type: 'early_development', severity: 'low', description: 'Package is in early development (Planning/Pre-Alpha)' });
+    }
+
+    // Check for typosquatting signals (very new + few downloads + similar name to popular packages)
+    const popularPythonPkgs = ['requests', 'flask', 'django', 'numpy', 'pandas', 'fastapi', 'httpx', 'boto3', 'transformers', 'langchain', 'openai', 'anthropic'];
+    for (const popular of popularPythonPkgs) {
+      if (pkg !== popular && pkg.includes(popular) && pkg.length <= popular.length + 3) {
+        packageWarnings.push({
+          type: 'potential_typosquat',
+          severity: 'medium',
+          description: `Package name "${pkg}" is similar to popular package "${popular}" — potential typosquatting`,
+        });
+      }
+    }
+
+    // Overall risk
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    let overallRisk = worstFileRisk;
+    if (packageWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    // Extract dependencies from requires_dist
+    const deps = (info.requires_dist || []).map(d => d.split(/[;><=!\s]/)[0].trim()).filter(Boolean);
+
+    res.json({
+      package: pkg,
+      version: latest,
+      description: info.summary || null,
+      author: info.author || info.author_email || null,
+      license: info.license || null,
+      homepage: info.home_page || info.project_url || null,
+      repository: githubRepo ? `https://github.com/${githubRepo}` : null,
+      pypiUrl,
+      pythonRequires: info.requires_python || null,
+      dependencyCount: deps.length,
+      dependencies: deps.slice(0, 30),
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: totalScore,
+      totalFindings,
+      totalCritical,
+      totalHigh,
+      packageWarnings,
+      verdict: totalFindings === 0 && packageWarnings.length === 0
+        ? `✅ Package ${pkg}==${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues in ${pkg}==${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.`
+          : packageWarnings.some(w => w.severity === 'high')
+            ? `🔴 Suspicious setup.py in ${pkg}==${latest} — runs code during \`pip install\`. Review carefully.`
+            : totalHigh > 0
+              ? `🔶 High risk findings in ${pkg}==${latest} — ${totalHigh} high severity issue(s). Review recommended.`
+              : `⚠️ ${totalFindings} finding(s) in ${pkg}==${latest}. Minor concerns detected.`,
+      files: fileResults,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Package not found on PyPI: ${pkg}`, hint: 'Check the package name and try again.' });
+    }
+    res.status(500).json({ error: `Failed to scan package: ${err.message}` });
+  }
 });
 
 // --- Shared Scan Result (JSON) ---

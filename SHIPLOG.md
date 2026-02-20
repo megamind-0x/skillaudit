@@ -1,5 +1,18 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (1:00 AM) — Policy Engine (Security Policy Enforcement)
+**What:** Full policy engine for defining and enforcing custom security policies. Teams create policies with rules like "block anything above moderate risk" or "deny if credential_theft category triggers" and get programmatic allow/deny decisions.
+**Endpoints:**
+- `POST /policy` — create/update a named policy (API key required, stored in Redis)
+- `GET /policy` — list all policies for your API key
+- `GET /policy/:id/evaluate?url=` — evaluate a URL against a stored policy
+- `POST /policy/:id/evaluate` — evaluate content against a stored policy
+- `POST /policy/evaluate-inline` — evaluate against an inline policy (no storage, no key needed)
+- `DELETE /policy/:id` — remove a policy
+**Policy options:** `maxRisk` (threshold), `blockedCategories` (deny on category match), `blockedRules` (deny on specific rule IDs), `allowedDomains` (whitelist mode), `blockedDomains` (blacklist), `maxFindings` (cap on actionable findings), `requireCleanSecrets` (zero hardcoded secrets).
+**Response:** `{ pass: true/false, decision: "allow"/"deny", violations: [...], risk, score, scanId, reportUrl }`
+**Why:** This is the difference between a scanner and infrastructure. A scanner shows you results. Infrastructure enforces policy. Before this, SkillAudit could tell you "this skill has 3 high-severity findings" but couldn't answer "should my agent install this?" That answer depends on the team's risk tolerance, their domain whitelist, their compliance requirements. Now any CI/CD pipeline, agent framework, or MCP client can define a policy and get a binary allow/deny decision. That's what enterprises actually need: not dashboards, not reports — programmatic policy enforcement they can plug into their agent install flow. The inline evaluation endpoint (`POST /policy/evaluate-inline`) works without an API key, making it easy for anyone to try.
+
 ## 2026-02-20 (10:00 PM) — Multi-Mode Scanner UI (npm + PyPI + GitHub Repo on Landing Page)
 **What:** Tabbed scanner interface on the landing page with 4 modes: URL, npm, PyPI, and GitHub Repo. Each mode has its own input placeholder, example links, and custom result renderer.
 **Details:**

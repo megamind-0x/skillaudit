@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-20 (10:00 PM) — Multi-Mode Scanner UI (npm + PyPI + GitHub Repo on Landing Page)
+**What:** Tabbed scanner interface on the landing page with 4 modes: URL, npm, PyPI, and GitHub Repo. Each mode has its own input placeholder, example links, and custom result renderer.
+**Details:**
+- **npm tab:** Type a package name → scans via `/scan/npm` → shows package metadata (version, author, license, dep count), per-file scan results, package warnings (install scripts, suspicious deps), and overall risk
+- **PyPI tab:** Type a package name → scans via `/scan/pypi` → same rich display for Python packages
+- **Repo tab:** Type `owner/repo` → scans via `/scan/repo` → shows discovered skill files, per-file risk breakdown, badge URL
+- **URL tab:** Original behavior, now with XSS-safe rendering via `esc()` helper
+- Example links for each mode (express, langchain, mcp, modelcontextprotocol/servers, etc.)
+- Responsive tab design that works on mobile
+- Custom renderers: `renderPkgResult()` for npm/PyPI, `renderRepoResult()` for repos, `renderFindings()` for URLs
+**Why:** SkillAudit had npm scanning, PyPI scanning, and repo scanning as backend APIs — but the landing page only showed URL scanning. Visitors were seeing 25% of the product. Now every scan mode is one click away. This is how you convert visitors to users: show them what you can actually do. Infrastructure tools need to be discoverable, not hidden behind API docs.
+
 ## 2026-02-20 (8:12 PM) — 5 New Detection Rule Categories (Agent-Era Attack Vectors)
 **What:** 5 new rule categories with 58 patterns, bringing the total from 22 to 27 rules. Targets modern agent-specific attacks that the original ruleset didn't cover.
 **New rules:**

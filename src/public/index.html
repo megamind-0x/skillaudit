@@ -153,12 +153,28 @@ th{color:#00ff88;font-weight:600}
 code{background:#1a1a3e;padding:0.1rem 0.35rem;border-radius:4px;font-size:0.82rem}
 pre{background:#1a1a3e;padding:1rem;border-radius:8px;overflow-x:auto;font-size:0.82rem;margin:0.5rem 0}
 footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1px solid #1a1a3e;margin-top:2rem}
+/* Scan tabs */
+.scan-tab{flex:1;background:#0f0f23;color:#888;border:none;padding:0.6rem 0.5rem;font-family:monospace;font-size:0.85rem;cursor:pointer;transition:all 0.2s;font-weight:600}
+.scan-tab:hover{color:#ccc;background:#1a1a3e}
+.scan-tab.active{background:#1a1a3e;color:#00ff88;box-shadow:inset 0 -2px 0 #00ff88}
+.scan-tab:not(:last-child){border-right:1px solid #3a3a6a}
+
+/* Multi-file results */
+.file-results{margin-top:1rem}
+.file-result{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0.75rem;background:#111133;border-radius:6px;margin-bottom:0.4rem;font-size:0.82rem}
+.file-result .fname{color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:50%}
+.file-result .fmeta{display:flex;align-items:center;gap:0.5rem}
+.pkg-warnings{margin-top:0.8rem}
+.pkg-warning{padding:0.4rem 0.75rem;background:#3d2a0a;border-left:3px solid #ffaa00;border-radius:0 6px 6px 0;margin-bottom:0.4rem;font-size:0.82rem;color:#ddd}
+.pkg-warning.warn-high{background:#3d1a0a;border-left-color:#ff4444}
+
 @media(max-width:600px){
   .input-row{flex-direction:column}
   h1{font-size:2rem}
   .hero-tagline{font-size:1.1rem}
   .how-it-works{grid-template-columns:1fr;gap:0.5rem}
   .scan-counter .num{font-size:2rem}
+  .scan-tab{font-size:0.75rem;padding:0.5rem 0.3rem}
 }
 </style>
 </head>
@@ -177,16 +193,36 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
 </div>
 
 <div class="scan-box">
-  <h2>Paste a skill URL<span class="free-badge">FREE</span></h2>
-  <p class="subtitle">We'll scan for credential theft, data exfiltration, prompt injection & more</p>
+  <h2>Scan anything<span class="free-badge">FREE</span></h2>
+  <p class="subtitle">URLs, npm packages, PyPI packages, or entire GitHub repos</p>
+  <div class="scan-tabs" style="display:flex;gap:0;margin-bottom:1rem;border-radius:8px;overflow:hidden;border:1px solid #3a3a6a;position:relative;z-index:1">
+    <button class="scan-tab active" data-mode="url" onclick="switchTab('url')">🔗 URL</button>
+    <button class="scan-tab" data-mode="npm" onclick="switchTab('npm')">📦 npm</button>
+    <button class="scan-tab" data-mode="pypi" onclick="switchTab('pypi')">🐍 PyPI</button>
+    <button class="scan-tab" data-mode="repo" onclick="switchTab('repo')">🗂️ Repo</button>
+  </div>
   <div class="input-row">
-    <input type="url" id="url-input" placeholder="https://raw.githubusercontent.com/.../SKILL.md" autofocus />
+    <input type="text" id="url-input" placeholder="https://raw.githubusercontent.com/.../SKILL.md" autofocus />
     <button id="scan-btn" onclick="runScan()">Scan Now</button>
   </div>
-  <div class="examples">
+  <div class="examples" id="examples-url">
     Try: <a onclick="tryExample('https://raw.githubusercontent.com/anthropics/anthropic-cookbook/main/misc/prompt_caching.ipynb')">Anthropic cookbook</a>
     · <a onclick="tryExample('https://raw.githubusercontent.com/megamind-0x/skillaudit/main/test/moltbook-skill.md')">Moltbook skill</a>
     · <a onclick="tryExample('https://raw.githubusercontent.com/megamind-0x/skillaudit/main/test/agentvalley-skill.md')">AgentValley skill</a>
+  </div>
+  <div class="examples" id="examples-npm" style="display:none">
+    Try: <a onclick="tryNpm('@modelcontextprotocol/sdk')">@modelcontextprotocol/sdk</a>
+    · <a onclick="tryNpm('langchain')">langchain</a>
+    · <a onclick="tryNpm('ai')">ai (Vercel AI SDK)</a>
+  </div>
+  <div class="examples" id="examples-pypi" style="display:none">
+    Try: <a onclick="tryPypi('mcp')">mcp</a>
+    · <a onclick="tryPypi('langchain')">langchain</a>
+    · <a onclick="tryPypi('openai')">openai</a>
+  </div>
+  <div class="examples" id="examples-repo" style="display:none">
+    Try: <a onclick="tryRepo('modelcontextprotocol/servers')">modelcontextprotocol/servers</a>
+    · <a onclick="tryRepo('megamind-0x/skillaudit')">megamind-0x/skillaudit</a>
   </div>
   <div id="results"></div>
 </div>
@@ -307,21 +343,28 @@ Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠 · <a
 </div>
 
 <script>
+let scanMode='url';
+const placeholders={url:'https://raw.githubusercontent.com/.../SKILL.md',npm:'@modelcontextprotocol/sdk',pypi:'mcp',repo:'owner/repo-name'};
+function switchTab(mode){
+  scanMode=mode;
+  document.querySelectorAll('.scan-tab').forEach(t=>t.classList.toggle('active',t.dataset.mode===mode));
+  document.getElementById('url-input').placeholder=placeholders[mode]||'';
+  document.getElementById('url-input').value='';
+  ['url','npm','pypi','repo'].forEach(m=>{const el=document.getElementById('examples-'+m);if(el)el.style.display=m===mode?'':'none'});
+  document.getElementById('url-input').focus();
+}
 function tryExample(url){document.getElementById('url-input').value=url;runScan()}
+function tryNpm(pkg){switchTab('npm');document.getElementById('url-input').value=pkg;runScan()}
+function tryPypi(pkg){switchTab('pypi');document.getElementById('url-input').value=pkg;runScan()}
+function tryRepo(repo){switchTab('repo');document.getElementById('url-input').value=repo;runScan()}
 
 async function loadStats(){
-  try{const r=await fetch('/stats');const d=await r.json();
-    const el=document.getElementById('scan-count');
-    const target=d.totalScans||0;
-    el.textContent=target;
-  }catch{document.getElementById('scan-count').textContent='0'}
+  try{const r=await fetch('/stats');const d=await r.json();document.getElementById('scan-count').textContent=d.totalScans||0}catch{document.getElementById('scan-count').textContent='0'}
 }
-
 async function loadRecent(){
   try{const r=await fetch('/history?limit=5');const d=await r.json();
     if(d.scans&&d.scans.length>0){
-      const list=document.getElementById('recent-list');
-      list.innerHTML=d.scans.slice(0,5).map(s=>{
+      document.getElementById('recent-list').innerHTML=d.scans.slice(0,5).map(s=>{
         const u=s.url.length>50?s.url.substring(0,47)+'...':s.url;
         return`<li><span class="recent-url" title="${s.url}">${u}</span><span class="recent-meta"><a href="/report/${s.id}" style="color:#555;font-size:0.7rem">report</a><span class="risk-pill pill-${s.riskLevel}">${s.riskLevel}</span></span></li>`;
       }).join('');
@@ -329,38 +372,105 @@ async function loadRecent(){
     }
   }catch{}
 }
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+function renderFindings(data){
+  let html='<div class="result-header risk-'+(data.riskLevel||data.overallRisk)+'"><span>'+(data.riskLevel||data.overallRisk||'unknown').toUpperCase()+'</span><span>Score: '+(data.riskScore||data.totalRiskScore||0)+'</span></div>';
+  html+='<div class="verdict">'+esc(data.verdict)+'</div>';
+  if(data.reportUrl){const ru=location.origin+data.reportUrl;html+=`<div class="share-link">🔗 <input readonly value="${ru}" onclick="this.select()"/><button onclick="navigator.clipboard.writeText('${esc(ru)}')">Copy</button></div>`}
+  const s=data.summary||{total:data.totalFindings||0,critical:data.totalCritical||0,high:data.totalHigh||0,medium:0,low:0};
+  html+=`<div class="summary-grid"><div class="summary-item"><div class="num" style="color:#fff">${s.total}</div><div class="label">Findings</div></div><div class="summary-item"><div class="num" style="color:#ff0044">${s.critical}</div><div class="label">Critical</div></div><div class="summary-item"><div class="num" style="color:#ff4444">${s.high}</div><div class="label">High</div></div><div class="summary-item"><div class="num" style="color:#ffaa00">${s.medium||0}</div><div class="label">Medium</div></div><div class="summary-item"><div class="num" style="color:#88ff00">${s.low||0}</div><div class="label">Low</div></div></div>`;
+  if(data.findings&&data.findings.length>0){
+    data.findings.slice(0,8).forEach(f=>{
+      const sc=f.severity==='critical'?'#ff0044':f.severity==='high'?'#ff4444':f.severity==='medium'?'#ffaa00':'#88ff00';
+      html+=`<details class="finding-item sev-${f.severity}"><summary><span class="sev-badge" style="background:${sc}">${f.severity}</span><span class="finding-id">${esc(f.ruleId)}</span><span>${esc(f.name)}</span><span style="color:#555;margin-left:auto;font-size:0.7rem">L${f.line}</span></summary><div class="finding-detail"><p>${esc(f.description)}</p><code>${esc((f.lineContent||'').substring(0,200))}</code></div></details>`;
+    });
+    if(data.findings.length>8)html+=`<p style="color:#555;font-size:0.8rem;padding:0.5rem">+ ${data.findings.length-8} more findings — <a href="${data.reportUrl||'#'}">view full report</a></p>`;
+  }
+  return html;
+}
+
+function renderPkgResult(data){
+  let html=`<div class="result-header risk-${data.overallRisk}"><span>${(data.overallRisk||'unknown').toUpperCase()}</span><span>Score: ${data.totalRiskScore||0}</span></div>`;
+  html+=`<div class="verdict">${esc(data.verdict)}</div>`;
+  // Package info
+  html+=`<div style="background:#111133;border-radius:8px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.85rem">`;
+  html+=`<strong style="color:#fff">${esc(data.package)}</strong>`;
+  if(data.version)html+=`<span style="color:#00ff88">@${esc(data.version)}</span>`;
+  if(data.description)html+=`<div style="color:#888;margin-top:0.2rem">${esc(data.description)}</div>`;
+  const meta=[];
+  if(data.author)meta.push('by '+esc(typeof data.author==='object'?data.author.name:data.author));
+  if(data.license)meta.push(esc(data.license));
+  if(data.dependencyCount!==undefined)meta.push(data.dependencyCount+' deps');
+  if(meta.length)html+=`<div style="color:#555;font-size:0.75rem;margin-top:0.2rem">${meta.join(' · ')}</div>`;
+  html+=`</div>`;
+  // Summary grid
+  html+=`<div class="summary-grid"><div class="summary-item"><div class="num" style="color:#fff">${data.filesScanned||0}</div><div class="label">Files</div></div><div class="summary-item"><div class="num" style="color:#fff">${data.totalFindings||0}</div><div class="label">Findings</div></div><div class="summary-item"><div class="num" style="color:#ff0044">${data.totalCritical||0}</div><div class="label">Critical</div></div><div class="summary-item"><div class="num" style="color:#ff4444">${data.totalHigh||0}</div><div class="label">High</div></div></div>`;
+  // Package warnings
+  if(data.packageWarnings&&data.packageWarnings.length>0){
+    html+=`<div class="pkg-warnings"><div style="color:#ffaa00;font-weight:700;font-size:0.85rem;margin-bottom:0.4rem">⚠ Package Warnings</div>`;
+    data.packageWarnings.forEach(w=>{html+=`<div class="pkg-warning ${w.severity==='high'?'warn-high':''}">${esc(w.description)}${w.command?' — <code style="font-size:0.75rem">'+esc(w.command.substring(0,100))+'</code>':''}</div>`});
+    html+=`</div>`;
+  }
+  // File results
+  if(data.files&&data.files.length>0){
+    html+=`<div class="file-results"><div style="color:#888;font-size:0.8rem;margin-bottom:0.4rem">${data.files.length} file(s) scanned:</div>`;
+    data.files.forEach(f=>{html+=`<div class="file-result"><span class="fname" title="${esc(f.file)}">${esc(f.file)}</span><span class="fmeta">${f.findings||0} findings <span class="risk-pill pill-${f.riskLevel}">${f.riskLevel}</span>${f.reportUrl?'<a href="'+f.reportUrl+'" style="color:#555;font-size:0.7rem">report</a>':''}</span></div>`});
+    html+=`</div>`;
+  }
+  return html;
+}
+
+function renderRepoResult(data){
+  let html=`<div class="result-header risk-${data.overallRisk}"><span>${(data.overallRisk||'unknown').toUpperCase()}</span><span>Score: ${data.totalRiskScore||0}</span></div>`;
+  html+=`<div class="verdict">${esc(data.verdict)}</div>`;
+  html+=`<div style="background:#111133;border-radius:8px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.85rem">`;
+  html+=`<strong style="color:#fff">📁 ${esc(data.repo)}</strong> <span style="color:#555">(${esc(data.branch||'main')})</span>`;
+  html+=`<div style="color:#888;margin-top:0.2rem">${data.filesDiscovered} skill files discovered · ${data.filesScanned} scanned · ${data.filesFailed||0} failed</div>`;
+  if(data.badgeUrl)html+=`<div style="margin-top:0.3rem"><img src="${esc(data.badgeUrl)}" alt="badge" style="height:20px"></div>`;
+  html+=`</div>`;
+  html+=`<div class="summary-grid"><div class="summary-item"><div class="num" style="color:#fff">${data.filesScanned||0}</div><div class="label">Files</div></div><div class="summary-item"><div class="num" style="color:#fff">${data.totalFindings||0}</div><div class="label">Findings</div></div><div class="summary-item"><div class="num" style="color:#ff0044">${data.totalCritical||0}</div><div class="label">Critical</div></div><div class="summary-item"><div class="num" style="color:#ff4444">${data.totalHigh||0}</div><div class="label">High</div></div></div>`;
+  if(data.files&&data.files.length>0){
+    html+=`<div class="file-results">`;
+    data.files.forEach(f=>{
+      if(f.status==='error'){html+=`<div class="file-result"><span class="fname">${esc(f.file)}</span><span style="color:#ff4444;font-size:0.75rem">error</span></div>`;return}
+      html+=`<div class="file-result"><span class="fname" title="${esc(f.file)}">${esc(f.file)}</span><span class="fmeta">${f.findings||0} findings <span class="risk-pill pill-${f.riskLevel}">${f.riskLevel}</span>${f.reportUrl?'<a href="'+f.reportUrl+'" style="color:#555;font-size:0.7rem">report</a>':''}</span></div>`;
+    });
+    html+=`</div>`;
+  }
+  return html;
+}
 
 async function runScan(){
   const input=document.getElementById('url-input'),btn=document.getElementById('scan-btn'),results=document.getElementById('results');
-  const url=input.value.trim();if(!url){input.focus();return}
+  const val=input.value.trim();if(!val){input.focus();return}
   btn.disabled=true;btn.textContent='Scanning...';results.style.display='none';
   try{
-    const res=await fetch('/scan/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-    const data=await res.json();
-    if(data.error){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">Error: '+data.error+'</p>';results.style.display='block';return}
-    let html='<div class="result-header risk-'+data.riskLevel+'"><span>'+data.riskLevel.toUpperCase()+'</span><span>Score: '+data.riskScore+'</span></div>';
-    html+='<div class="verdict">'+data.verdict+'</div>';
-    if(data.reportUrl){
-      const reportUrl=location.origin+data.reportUrl;
-      html+=`<div class="share-link">🔗 <input readonly value="${reportUrl}" onclick="this.select()"/><button onclick="navigator.clipboard.writeText('${reportUrl}')">Copy</button></div>`;
+    let res,data;
+    if(scanMode==='npm'){
+      res=await fetch('/scan/npm?package='+encodeURIComponent(val));
+      data=await res.json();
+      if(data.error){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">'+esc(data.error)+(data.hint?' — '+esc(data.hint):'')+'</p>';results.style.display='block';return}
+      results.innerHTML=renderPkgResult(data);
+    }else if(scanMode==='pypi'){
+      res=await fetch('/scan/pypi?package='+encodeURIComponent(val));
+      data=await res.json();
+      if(data.error){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">'+esc(data.error)+(data.hint?' — '+esc(data.hint):'')+'</p>';results.style.display='block';return}
+      results.innerHTML=renderPkgResult(data);
+    }else if(scanMode==='repo'){
+      res=await fetch('/scan/repo?repo='+encodeURIComponent(val));
+      data=await res.json();
+      if(data.error){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">'+esc(data.error)+(data.hint?' — '+esc(data.hint):'')+'</p>';results.style.display='block';return}
+      results.innerHTML=renderRepoResult(data);
+    }else{
+      res=await fetch('/scan/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:val})});
+      data=await res.json();
+      if(data.error){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">'+esc(data.error)+'</p>';results.style.display='block';return}
+      results.innerHTML=renderFindings(data);
     }
-    html+='<div class="summary-grid">';
-    html+=`<div class="summary-item"><div class="num" style="color:#fff">${data.summary.total}</div><div class="label">Findings</div></div>`;
-    html+=`<div class="summary-item"><div class="num" style="color:#ff0044">${data.summary.critical}</div><div class="label">Critical</div></div>`;
-    html+=`<div class="summary-item"><div class="num" style="color:#ff4444">${data.summary.high}</div><div class="label">High</div></div>`;
-    html+=`<div class="summary-item"><div class="num" style="color:#ffaa00">${data.summary.medium}</div><div class="label">Medium</div></div>`;
-    html+=`<div class="summary-item"><div class="num" style="color:#88ff00">${data.summary.low}</div><div class="label">Low</div></div>`;
-    html+='</div>';
-    if(data.findings&&data.findings.length>0){
-      data.findings.slice(0,8).forEach(f=>{
-        const sevCol=f.severity==='critical'?'#ff0044':f.severity==='high'?'#ff4444':f.severity==='medium'?'#ffaa00':'#88ff00';
-        html+=`<details class="finding-item sev-${f.severity}"><summary><span class="sev-badge" style="background:${sevCol}">${f.severity}</span><span class="finding-id">${f.ruleId}</span><span>${f.name}</span><span style="color:#555;margin-left:auto;font-size:0.7rem">L${f.line}</span></summary><div class="finding-detail"><p>${f.description}</p><code>${(f.lineContent||'').substring(0,200)}</code></div></details>`;
-      });
-      if(data.findings.length>8)html+=`<p style="color:#555;font-size:0.8rem;padding:0.5rem">+ ${data.findings.length-8} more findings — <a href="${data.reportUrl}">view full report</a></p>`;
-    }
-    results.innerHTML=html;results.style.display='block';
+    results.style.display='block';
     loadStats();loadRecent();
-  }catch(e){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">Error: '+e.message+'</p>';results.style.display='block'}
+  }catch(e){results.innerHTML='<p style="color:#ff4444;padding:0.5rem">Error: '+esc(e.message)+'</p>';results.style.display='block'}
   finally{btn.disabled=false;btn.textContent='Scan Now'}
 }
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')runScan()});

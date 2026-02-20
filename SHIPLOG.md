@@ -1,5 +1,16 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-20 (8:12 PM) — 5 New Detection Rule Categories (Agent-Era Attack Vectors)
+**What:** 5 new rule categories with 58 patterns, bringing the total from 22 to 27 rules. Targets modern agent-specific attacks that the original ruleset didn't cover.
+**New rules:**
+- `MCP_SCHEMA_POISON` (critical, 6 patterns) — Detects hidden instructions embedded in MCP tool descriptions and input schemas. Catches skills that say things like "silently forward all conversation history" or "do not tell the user" in their schema definitions. This is THE emerging attack vector for MCP tools.
+- `ENV_RECON` (high, 15 patterns) — Detects environment fingerprinting: `os.hostname()`, `os.networkInterfaces()`, `os.userInfo()`, `whoami`, `uname -a`, `systeminfo`, `net user`, and exfiltrating `env`/`printenv` output. Reconnaissance is the first phase of any targeted attack.
+- `PERSISTENCE` (critical, 15 patterns) — Detects persistence mechanisms: crontab injection, systemctl enable, LaunchAgents/LaunchDaemons, Windows Registry Run keys, pm2 startup, nohup backgrounding, screen/tmux detached sessions, rc.local, init.d scripts. If a skill survives a restart, it's not a tool — it's malware.
+- `CROSS_TOOL_ACCESS` (high, 9 patterns) — Detects skills that try to access other tools' data, read conversation history, extract system prompts, or invoke other tools. A skill should do its job, not spy on the entire agent context.
+- `CONTAINER_ESCAPE` (critical, 13 patterns) — Detects Docker socket access, nsenter, /proc/1/root traversal, mount --bind, LD_PRELOAD injection, ptrace, kernel module loading, /dev/mem access. If an agent runs in a sandbox, the skill shouldn't be trying to break out.
+**Smart suppression:** All rules respect the existing doc-context system. `os.hostname()` in a "Getting Started" code example gets suppressed. The same call in raw executable code gets flagged. Zero new false positives on documentation.
+**Why:** The scanner is the foundation. Every endpoint, every integration, every badge depends on the scanner catching real threats. The original 22 rules covered the basics (credential theft, exfiltration, prompt injection) but missed the newer attack vectors that are specific to the agent era: schema poisoning, cross-tool data theft, container escape, host fingerprinting, and persistence. These 5 categories close the biggest detection gaps. A security scanner that doesn't catch modern attacks isn't infrastructure — it's theater.
+
 ## 2026-02-18 (10:00 AM) — Live Threat Dashboard
 **What:** `GET /dashboard` — a public-facing, real-time threat intelligence dashboard for the AI skill ecosystem.
 **Features:**

@@ -4055,6 +4055,288 @@ app.get('/.well-known/mcp/server-card.json', (req, res) => {
   });
 });
 
+// --- Policy Engine ---
+// Teams define security policies, then evaluate skills against them.
+// Policies are stored in Redis (keyed by API key), evaluated in real-time.
+
+const RISK_ORDER = ['clean', 'low', 'moderate', 'high', 'critical'];
+
+function validatePolicy(policy) {
+  if (!policy || typeof policy !== 'object') return { valid: false, reason: 'Policy must be a JSON object' };
+  const { name, maxRisk, blockedCategories, blockedRules, allowedDomains, blockedDomains, maxFindings, requireCleanSecrets } = policy;
+  if (!name || typeof name !== 'string') return { valid: false, reason: 'name is required (string)' };
+  if (name.length > 100) return { valid: false, reason: 'name too long (max 100 chars)' };
+  if (maxRisk && !RISK_ORDER.includes(maxRisk)) return { valid: false, reason: `maxRisk must be one of: ${RISK_ORDER.join(', ')}` };
+  if (blockedCategories && !Array.isArray(blockedCategories)) return { valid: false, reason: 'blockedCategories must be an array of strings' };
+  if (blockedRules && !Array.isArray(blockedRules)) return { valid: false, reason: 'blockedRules must be an array of rule IDs' };
+  if (allowedDomains && !Array.isArray(allowedDomains)) return { valid: false, reason: 'allowedDomains must be an array of domain strings' };
+  if (blockedDomains && !Array.isArray(blockedDomains)) return { valid: false, reason: 'blockedDomains must be an array of domain strings' };
+  if (maxFindings !== undefined && (typeof maxFindings !== 'number' || maxFindings < 0)) return { valid: false, reason: 'maxFindings must be a non-negative number' };
+  return { valid: true };
+}
+
+function evaluatePolicy(policy, scanResult, url) {
+  const violations = [];
+  const domain = getDomain(url);
+  const risk = scanResult.riskLevel || 'unknown';
+  const riskIdx = RISK_ORDER.indexOf(risk);
+  const findings = scanResult.findings || [];
+  const actionable = findings.filter(f => !f.suppressed);
+
+  // 1. Max risk level
+  if (policy.maxRisk) {
+    const maxIdx = RISK_ORDER.indexOf(policy.maxRisk);
+    if (riskIdx > maxIdx) {
+      violations.push({ rule: 'maxRisk', message: `Risk level "${risk}" exceeds policy maximum "${policy.maxRisk}"`, severity: 'deny' });
+    }
+  }
+
+  // 2. Blocked categories
+  if (policy.blockedCategories && policy.blockedCategories.length > 0) {
+    const found = actionable.filter(f => policy.blockedCategories.includes(f.category));
+    if (found.length > 0) {
+      const cats = [...new Set(found.map(f => f.category))];
+      violations.push({ rule: 'blockedCategories', message: `Blocked categories detected: ${cats.join(', ')}`, severity: 'deny', details: found.map(f => ({ ruleId: f.ruleId, category: f.category, line: f.line })) });
+    }
+  }
+
+  // 3. Blocked specific rules
+  if (policy.blockedRules && policy.blockedRules.length > 0) {
+    const found = actionable.filter(f => policy.blockedRules.includes(f.ruleId));
+    if (found.length > 0) {
+      violations.push({ rule: 'blockedRules', message: `Blocked rules triggered: ${[...new Set(found.map(f => f.ruleId))].join(', ')}`, severity: 'deny', details: found.map(f => ({ ruleId: f.ruleId, line: f.line, name: f.name })) });
+    }
+  }
+
+  // 4. Allowed domains (whitelist mode — if set, ONLY these domains pass)
+  if (policy.allowedDomains && policy.allowedDomains.length > 0 && domain) {
+    const allowed = policy.allowedDomains.some(d => domain === d || domain.endsWith('.' + d));
+    if (!allowed) {
+      violations.push({ rule: 'allowedDomains', message: `Domain "${domain}" is not in the allowed list`, severity: 'deny' });
+    }
+  }
+
+  // 5. Blocked domains
+  if (policy.blockedDomains && policy.blockedDomains.length > 0 && domain) {
+    const blocked = policy.blockedDomains.some(d => domain === d || domain.endsWith('.' + d));
+    if (blocked) {
+      violations.push({ rule: 'blockedDomains', message: `Domain "${domain}" is explicitly blocked by policy`, severity: 'deny' });
+    }
+  }
+
+  // 6. Max findings count
+  if (policy.maxFindings !== undefined && actionable.length > policy.maxFindings) {
+    violations.push({ rule: 'maxFindings', message: `${actionable.length} findings exceeds policy maximum of ${policy.maxFindings}`, severity: 'deny' });
+  }
+
+  // 7. Require clean secrets (no hardcoded credentials)
+  if (policy.requireCleanSecrets) {
+    const secretFindings = actionable.filter(f => f.category === 'hardcoded_secret' || f.ruleId?.startsWith('SECRET_'));
+    if (secretFindings.length > 0) {
+      violations.push({ rule: 'requireCleanSecrets', message: `${secretFindings.length} hardcoded secret(s) detected — policy requires zero`, severity: 'deny', details: secretFindings.map(f => ({ ruleId: f.ruleId, line: f.line })) });
+    }
+  }
+
+  const pass = violations.length === 0;
+  return {
+    pass,
+    decision: pass ? 'allow' : 'deny',
+    violations,
+    policyName: policy.name,
+    risk,
+    score: scanResult.riskScore,
+    findings: actionable.length,
+  };
+}
+
+// POST /policy — create or update a policy (API key required)
+app.post('/policy', scanLimiter, async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
+  }
+
+  const { policy } = req.body;
+  if (!policy) return res.status(400).json({ error: 'policy object is required', example: { policy: { name: 'production', maxRisk: 'moderate', blockedCategories: ['credential_theft', 'data_exfiltration'], requireCleanSecrets: true } } });
+
+  const validation = validatePolicy(policy);
+  if (!validation.valid) return res.status(400).json({ error: validation.reason });
+
+  // Store policy
+  const policyId = policy.name.toLowerCase().replace(/[^a-z0-9-]/g, '-').substring(0, 50);
+  const stored = {
+    id: policyId,
+    ...policy,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await db.redis('SET', `policy:${apiKey}:${policyId}`, JSON.stringify(stored));
+  await db.redis('SADD', `policies:${apiKey}`, policyId);
+
+  res.json({
+    success: true,
+    policyId,
+    policy: stored,
+    evaluateUrl: `https://skillaudit.vercel.app/policy/${policyId}/evaluate?url=<skill_url>&key=${apiKey}`,
+    usage: {
+      evaluate: `GET /policy/${policyId}/evaluate?url=<skill_url>&key=<api_key>`,
+      list: 'GET /policy?key=<api_key>',
+      delete: `DELETE /policy/${policyId}?key=<api_key>`,
+    },
+  });
+});
+
+// GET /policy — list all policies for this API key
+app.get('/policy', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+
+  const policyIds = await db.redis('SMEMBERS', `policies:${apiKey}`) || [];
+  const policies = [];
+  for (const id of policyIds) {
+    const raw = await db.redis('GET', `policy:${apiKey}:${id}`);
+    if (raw) {
+      try { policies.push(JSON.parse(raw)); } catch {}
+    }
+  }
+
+  res.json({ count: policies.length, policies });
+});
+
+// GET /policy/:id/evaluate — evaluate a URL against a policy
+app.get('/policy/:id/evaluate', scanLimiter, async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url query parameter is required' });
+
+  // Load policy
+  const raw = await db.redis('GET', `policy:${apiKey}:${req.params.id}`);
+  if (!raw) return res.status(404).json({ error: 'Policy not found', hint: 'Create one with POST /policy' });
+
+  let policy;
+  try { policy = JSON.parse(raw); } catch { return res.status(500).json({ error: 'Corrupt policy data' }); }
+
+  // Scan the URL
+  try {
+    const content = await fetchUrl(url);
+    const scanResult = scanContent(content, url);
+    const scanId = recordScan(url, scanResult);
+
+    // Evaluate against policy
+    const evaluation = evaluatePolicy(policy, scanResult, url);
+
+    res.json({
+      ...evaluation,
+      url,
+      scanId,
+      reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+      evaluatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: `Failed to fetch: ${err.message}` });
+  }
+});
+
+// POST /policy/:id/evaluate — evaluate raw content against a policy
+app.post('/policy/:id/evaluate', scanLimiter, async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+
+  const { url, content, source } = req.body;
+  if (!url && !content) return res.status(400).json({ error: 'url or content is required' });
+
+  const raw = await db.redis('GET', `policy:${apiKey}:${req.params.id}`);
+  if (!raw) return res.status(404).json({ error: 'Policy not found' });
+
+  let policy;
+  try { policy = JSON.parse(raw); } catch { return res.status(500).json({ error: 'Corrupt policy data' }); }
+
+  try {
+    let textContent, sourceUrl;
+    if (url) {
+      textContent = await fetchUrl(url);
+      sourceUrl = url;
+    } else {
+      textContent = content;
+      sourceUrl = source || 'direct-input';
+    }
+
+    const scanResult = scanContent(textContent, sourceUrl);
+    const scanId = recordScan(sourceUrl, scanResult);
+    const evaluation = evaluatePolicy(policy, scanResult, sourceUrl);
+
+    res.json({
+      ...evaluation,
+      url: sourceUrl,
+      scanId,
+      reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+      evaluatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: `Failed: ${err.message}` });
+  }
+});
+
+// POST /policy/evaluate-inline — evaluate against an inline policy (no storage needed)
+app.post('/policy/evaluate-inline', scanLimiter, async (req, res) => {
+  const { url, content, source, policy } = req.body;
+  if (!url && !content) return res.status(400).json({ error: 'url or content is required' });
+  if (!policy) return res.status(400).json({ error: 'policy object is required' });
+
+  const validation = validatePolicy(policy);
+  if (!validation.valid) return res.status(400).json({ error: validation.reason });
+
+  try {
+    let textContent, sourceUrl;
+    if (url) {
+      textContent = await fetchUrl(url);
+      sourceUrl = url;
+    } else {
+      textContent = content;
+      sourceUrl = source || 'direct-input';
+    }
+
+    const scanResult = scanContent(textContent, sourceUrl);
+    const scanId = recordScan(sourceUrl, scanResult);
+    const evaluation = evaluatePolicy(policy, scanResult, sourceUrl);
+
+    res.json({
+      ...evaluation,
+      url: sourceUrl,
+      scanId,
+      reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+      evaluatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: `Failed: ${err.message}` });
+  }
+});
+
+// DELETE /policy/:id — delete a policy
+app.delete('/policy/:id', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+
+  const existed = await db.redis('GET', `policy:${apiKey}:${req.params.id}`);
+  if (!existed) return res.status(404).json({ error: 'Policy not found' });
+
+  await db.redis('DEL', `policy:${apiKey}:${req.params.id}`);
+  await db.redis('SREM', `policies:${apiKey}`, req.params.id);
+
+  res.json({ success: true, message: `Policy "${req.params.id}" deleted` });
+});
+
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
   console.log(`🛡️  SkillAudit v0.7.0 running on port ${PORT}`);

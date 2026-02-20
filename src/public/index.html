@@ -331,6 +331,9 @@ curl -X POST https://skillaudit.vercel.app/scan/content \
 <tr><td><code>POST /scan/batch</code></td><td>$0.10</td><td>Batch scan up to 20 URLs</td></tr>
 <tr><td><code>POST /scan/compare</code></td><td>$0.05</td><td>Compare two skill versions</td></tr>
 <tr><td><code>GET /scan/:id</code></td><td>Free</td><td>Get scan result (JSON)</td></tr>
+<tr><td><code>POST /policy</code></td><td>Free*</td><td>Create a security policy (API key required)</td></tr>
+<tr><td><code>GET /policy/:id/evaluate</code></td><td>Free*</td><td>Evaluate a URL against your policy → allow/deny</td></tr>
+<tr><td><code>POST /policy/evaluate-inline</code></td><td>Free</td><td>Evaluate content against an inline policy (no key needed)</td></tr>
 <tr><td><code>GET /report/:id</code></td><td>Free</td><td>View scan report (HTML)</td></tr>
 <tr><td><code>GET /stats</code></td><td>Free</td><td>Ecosystem scan statistics</td></tr>
 <tr><td><code>GET /openapi.json</code></td><td>Free</td><td>OpenAPI 3.0 spec</td></tr>

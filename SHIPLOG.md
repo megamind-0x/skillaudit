@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (7:00 AM) — Bulk Gate Endpoint (Multi-Skill Security Check)
+**What:** `POST /gate/bulk` — check multiple skills in a single call, get one composite allow/deny decision.
+**Request:** `{ urls: ["url1", "url2", ...], threshold: "moderate" }` (max 20 URLs)
+**Response:** `{ allow: true/false, decision: "allow"|"warn"|"deny", total, scanned, denied, warned, worstRisk, totalFindings, blocked: [...], results: [...] }`
+**How it works:**
+- Scans all URLs in parallel
+- Composite decision: DENY if ANY skill fails the threshold; WARN if any have findings below threshold
+- `blocked` array highlights exactly which skills failed and why
+- Per-URL results include scanId and reportUrl for drill-down
+- Error handling: failed fetches count as denials (fail-closed)
+**Why:** The `/gate` endpoint was the infrastructure play — but it only checked one skill at a time. Real agent frameworks don't install skills one by one. They install sets: "I need filesystem access, web browsing, and code execution." The bulk gate handles that reality. One POST, one answer: "can I install ALL of these?" If any single skill fails, the whole set is blocked. This is how security gates work in enterprise — fail-closed, check the batch, block the weakest link. Now any agent framework can add: `POST /gate/bulk` with its skill manifest → if `allow` is false, abort the install.
+
 ## 2026-02-21 (1:00 AM) — Policy Engine (Security Policy Enforcement)
 **What:** Full policy engine for defining and enforcing custom security policies. Teams create policies with rules like "block anything above moderate risk" or "deny if credential_theft category triggers" and get programmatic allow/deny decisions.
 **Endpoints:**

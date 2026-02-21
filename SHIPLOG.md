@@ -1,5 +1,23 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (10:00 PM) — CLI v0.9.0: Gate, Manifest, Markdown, Fail-On (Published to npm)
+**What:** Major CLI upgrade making `npx skillaudit` a first-class CI/CD tool. Published to npm as `skillaudit@0.9.0`.
+**New subcommands:**
+- `skillaudit gate <url>` — Pre-install gate check. Returns ALLOW/DENY with risk level. Exit code 0 = allow, 1 = deny. Supports `--threshold` flag.
+- `skillaudit manifest <file>` — Scan MCP tool manifest JSON locally. Shows per-tool findings with severity. Catches schema poisoning without hitting the API.
+**New flags:**
+- `--markdown` — Output as markdown table. Designed for GitHub PR comments: findings table, severity icons, risk summary. Copy-paste into CI workflows.
+- `--fail-on <level>` — Custom exit code threshold. `--fail-on moderate` exits 1 if risk >= moderate. Essential for CI pipelines with different risk tolerances.
+- `--threshold <level>` — Gate threshold control (default: moderate).
+**CI/CD usage:**
+```bash
+# In GitHub Actions / CI pipeline:
+npx skillaudit gate https://example.com/SKILL.md --threshold high || exit 1
+npx skillaudit ./skills/ --fail-on moderate --markdown >> $GITHUB_STEP_SUMMARY
+npx skillaudit manifest tools.json --json | jq .
+```
+**Why:** The CLI was a basic scanner — scan a file, see results. But CI/CD pipelines need: subcommands (gate vs scan vs manifest), configurable exit codes (--fail-on), machine-readable output (--json, --markdown), and the gate check as a first-class command. This makes `npx skillaudit` the one tool you add to your CI pipeline for agent security. One line in your GitHub Action, zero dependencies beyond Node.js.
+
 ## 2026-02-21 (7:00 PM) — A2A Agent Card Scanner (GET /scan/agent-card)
 **What:** `GET /scan/agent-card?url=` or `?domain=` — fetch an A2A Agent Card (agent.json) and run a full security assessment.
 **Three-layer analysis:**

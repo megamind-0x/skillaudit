@@ -335,6 +335,105 @@ app.get('/gate', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Bulk Gate (POST) - Check multiple skills at once ---
+// The real infrastructure endpoint: agents install skill SETS, not singles.
+// One call, one decision: "can I install ALL of these?"
+app.post('/gate/bulk', scanLimiter, async (req, res) => {
+  const { urls, threshold: thresholdParam } = req.body;
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({
+      allow: false,
+      decision: 'error',
+      reason: 'urls array is required',
+      example: { urls: ['https://example.com/SKILL.md', 'https://example.com/tool.md'], threshold: 'moderate' },
+    });
+  }
+  if (urls.length > 20) {
+    return res.status(400).json({ allow: false, decision: 'error', reason: 'Maximum 20 URLs per bulk gate check' });
+  }
+
+  const threshold = thresholdParam || 'moderate';
+  const thresholdOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
+  const thresholdIdx = thresholdOrder[threshold] ?? 2;
+
+  const results = await Promise.all(urls.map(async (url) => {
+    try {
+      const content = await fetchUrl(url);
+      const result = scanContent(content, url);
+      const id = recordScan(url, result);
+      const riskIdx = thresholdOrder[result.riskLevel] ?? 0;
+      const decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
+
+      return {
+        url,
+        status: 'scanned',
+        allow: decision !== 'deny',
+        decision,
+        risk: result.riskLevel,
+        score: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        verdict: result.verdict,
+        scanId: id,
+        reportUrl: `https://skillaudit.vercel.app/report/${id}`,
+      };
+    } catch (err) {
+      return {
+        url,
+        status: 'error',
+        allow: false,
+        decision: 'deny',
+        risk: 'unknown',
+        error: err.message,
+      };
+    }
+  }));
+
+  // Composite decision: deny if ANY skill is denied, warn if ANY warns
+  const denied = results.filter(r => r.decision === 'deny');
+  const warned = results.filter(r => r.decision === 'warn');
+  const errors = results.filter(r => r.status === 'error');
+  const scanned = results.filter(r => r.status === 'scanned');
+
+  const compositeAllow = denied.length === 0 && errors.length === 0;
+  const compositeDecision = denied.length > 0 || errors.length > 0
+    ? 'deny'
+    : warned.length > 0
+      ? 'warn'
+      : 'allow';
+
+  // Worst risk across all
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const worstRisk = scanned.reduce((worst, r) => {
+    return riskOrder.indexOf(r.risk) > riskOrder.indexOf(worst) ? r.risk : worst;
+  }, 'clean');
+
+  const totalFindings = scanned.reduce((s, r) => s + (r.findings || 0), 0);
+  const totalCritical = scanned.reduce((s, r) => s + (r.critical || 0), 0);
+
+  res.json({
+    allow: compositeAllow,
+    decision: compositeDecision,
+    total: urls.length,
+    scanned: scanned.length,
+    errors: errors.length,
+    denied: denied.length,
+    warned: warned.length,
+    worstRisk,
+    totalFindings,
+    totalCritical,
+    threshold,
+    verdict: compositeDecision === 'allow'
+      ? `✅ All ${scanned.length} skill(s) passed the gate. Safe to install.`
+      : compositeDecision === 'warn'
+        ? `⚠️ ${warned.length} skill(s) have warnings but are below the ${threshold} threshold. Proceed with caution.`
+        : `🔴 ${denied.length + errors.length} skill(s) BLOCKED. ${denied.map(d => d.url.split('/').pop()).join(', ')} failed the security gate.`,
+    // Only include blocked/warned items at top level for quick parsing
+    blocked: denied.length > 0 ? denied.map(d => ({ url: d.url, risk: d.risk, findings: d.findings, reportUrl: d.reportUrl })) : undefined,
+    results,
+  });
+});
+
 // --- Quick Scan (GET) - Agent-friendly ---
 app.get('/scan/quick', scanLimiter, async (req, res) => {
   const url = req.query.url;
@@ -401,6 +500,7 @@ app.get('/', (req, res) => {
       docs: '/openapi.json',
       endpoints: {
         'GET /gate?url=': 'Pre-install gate — instant allow/warn/deny decision for agents (the infrastructure endpoint)',
+        'POST /gate/bulk': 'Bulk gate — check multiple skills at once, get a single allow/deny for the set',
         'POST /scan/url': 'Scan a skill by URL (supports callback)',
         'POST /scan/content': 'Scan raw skill content',
         'POST /scan/deep': 'Deep scan with capability analysis (x402: $0.05 USDC)',
@@ -2169,6 +2269,7 @@ app.get('/openapi.json', (req, res) => {
     servers: [{ url: 'https://skillaudit.vercel.app', description: 'Production' }],
     paths: {
       '/gate': { get: { summary: 'Pre-install gate — should I install this skill?', description: 'The infrastructure endpoint. Returns a simple allow/warn/deny decision with minimal JSON. Designed for agents to call before installing ANY skill. One call, one answer.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill to check' }, { name: 'threshold', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' }, description: 'Risk threshold — deny at or above this level' }], responses: { '200': { description: 'Gate decision: {allow: bool, decision: "allow"|"warn"|"deny", risk, score, findings, verdict}' }, '400': { description: 'Missing URL or fetch error' } } } },
+      '/gate/bulk': { post: { summary: 'Bulk pre-install gate — check multiple skills at once', description: 'The infrastructure endpoint for agent frameworks. Pass an array of skill URLs, get a single composite allow/deny decision. Deny if ANY skill fails. Agents install skill sets, not singles — this endpoint handles that.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['urls'], properties: { urls: { type: 'array', items: { type: 'string' }, description: 'Array of skill URLs to check (max 20)' }, threshold: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' } } } } } }, responses: { '200': { description: 'Composite gate decision: {allow: bool, decision, blocked[], results[]}' } } } },
       '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents. Add ?format=sarif for SARIF v2.1.0 output.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json', 'sarif'] }, description: 'Output format (default: json, sarif for SARIF v2.1.0)' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },

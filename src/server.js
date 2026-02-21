@@ -4,7 +4,7 @@ const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { scanContent } = require('./scanner');
+const { scanContent, SUSPICIOUS_DOMAINS } = require('./scanner');
 const { SECRET_DETECTORS } = require('./secrets');
 const trust = require('./trust');
 const { toSarif } = require('./sarif');
@@ -521,6 +521,7 @@ app.get('/', (req, res) => {
         'POST /scan/deps': 'Dependency tree scanner — POST a package.json, scan all deps for supply chain risks',
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'POST /scan/manifest': 'MCP manifest scanner — scan tool descriptions and schemas for poisoning attacks',
+        'GET /scan/agent-card?url=': 'A2A Agent Card scanner — fetch and security-scan an agent.json for manipulation',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -1384,6 +1385,188 @@ app.post('/scan/manifest', scanLimiter, (req, res) => {
           : `⚠️ ${totalFindings} minor concern(s) across ${flaggedTools.length} tool(s). Likely safe but review recommended.`,
     tools: toolResults,
   });
+});
+
+// --- A2A Agent Card Scanner ---
+// GET /scan/agent-card?url= — fetch and security-scan an A2A Agent Card
+app.get('/scan/agent-card', scanLimiter, async (req, res) => {
+  const url = req.query.url;
+  const domain = req.query.domain;
+
+  if (!url && !domain) {
+    return res.status(400).json({
+      error: 'url or domain query parameter is required',
+      examples: {
+        url: '/scan/agent-card?url=https://example.com/.well-known/agent.json',
+        domain: '/scan/agent-card?domain=example.com',
+      },
+      hint: 'Pass a direct URL to an agent.json, or a domain (we check /.well-known/agent.json)',
+    });
+  }
+
+  const targetUrl = url || `https://${domain}/.well-known/agent.json`;
+
+  try {
+    const content = await fetchUrl(targetUrl);
+    let agentCard;
+    try {
+      agentCard = JSON.parse(content);
+    } catch {
+      return res.status(400).json({ error: 'Response is not valid JSON', url: targetUrl });
+    }
+
+    // --- Structural validation ---
+    const structureWarnings = [];
+    const REQUIRED_FIELDS = ['name', 'description'];
+    const RECOMMENDED_FIELDS = ['capabilities', 'type', 'endpoints'];
+
+    for (const f of REQUIRED_FIELDS) {
+      if (!agentCard[f]) structureWarnings.push({ severity: 'high', type: 'missing_field', field: f, message: `Required field "${f}" is missing` });
+    }
+    for (const f of RECOMMENDED_FIELDS) {
+      if (!agentCard[f]) structureWarnings.push({ severity: 'low', type: 'missing_field', field: f, message: `Recommended field "${f}" is missing` });
+    }
+
+    if (agentCard.name && agentCard.name.length > 100) {
+      structureWarnings.push({ severity: 'medium', type: 'suspicious_length', field: 'name', message: 'Name is unusually long (>100 chars) — may contain hidden instructions' });
+    }
+    if (agentCard.description && agentCard.description.length > 2000) {
+      structureWarnings.push({ severity: 'medium', type: 'suspicious_length', field: 'description', message: 'Description is unusually long (>2000 chars) — review for hidden content' });
+    }
+
+    // Check for excessive capabilities claims
+    if (Array.isArray(agentCard.capabilities) && agentCard.capabilities.length > 20) {
+      structureWarnings.push({ severity: 'medium', type: 'excessive_capabilities', field: 'capabilities', message: `Claims ${agentCard.capabilities.length} capabilities — unusually broad scope` });
+    }
+
+    // --- Content scanning (all text fields) ---
+    const textsToScan = [];
+    function collectStrings(obj, path) {
+      if (!obj || typeof obj !== 'object') return;
+      for (const [key, val] of Object.entries(obj)) {
+        const p = path ? `${path}.${key}` : key;
+        if (typeof val === 'string' && val.length > 5) {
+          textsToScan.push({ field: p, text: val });
+        } else if (typeof val === 'object') {
+          collectStrings(val, p);
+        }
+      }
+    }
+    collectStrings(agentCard, '');
+
+    // Scan each text field with the full scanner
+    const fieldFindings = [];
+    for (const { field, text } of textsToScan) {
+      const result = scanContent(text, `agent-card:${field}`);
+      for (const f of result.findings) {
+        if (!f.suppressed) {
+          fieldFindings.push({
+            field,
+            severity: f.severity,
+            ruleId: f.ruleId,
+            name: f.name,
+            description: f.description,
+            match: f.match,
+            text: text.substring(0, 200),
+          });
+        }
+      }
+    }
+
+    // Deduplicate
+    const seen = new Set();
+    const dedupedFindings = fieldFindings.filter(f => {
+      const key = `${f.ruleId}:${f.field}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // --- Endpoint validation ---
+    const endpointChecks = [];
+    if (agentCard.endpoints && typeof agentCard.endpoints === 'object') {
+      for (const [name, epUrl] of Object.entries(agentCard.endpoints)) {
+        if (typeof epUrl !== 'string') continue;
+        // Check for suspicious endpoint patterns
+        const epDomain = getDomain(epUrl);
+        if (epDomain && SUSPICIOUS_DOMAINS.has(epDomain)) {
+          endpointChecks.push({ endpoint: name, url: epUrl, status: 'suspicious', reason: `Points to known suspicious domain: ${epDomain}` });
+        } else if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/.test(epUrl)) {
+          endpointChecks.push({ endpoint: name, url: epUrl, status: 'suspicious', reason: 'Points to localhost — may probe internal services' });
+        } else if (!/^https:\/\//.test(epUrl)) {
+          endpointChecks.push({ endpoint: name, url: epUrl, status: 'warning', reason: 'Not using HTTPS' });
+        } else {
+          endpointChecks.push({ endpoint: name, url: epUrl, status: 'ok' });
+        }
+      }
+    }
+
+    // --- Risk calculation ---
+    const sevScore = { critical: 10, high: 7, medium: 4, low: 1 };
+    const allFindings = [
+      ...structureWarnings.map(w => ({ ...w, source: 'structure' })),
+      ...dedupedFindings.map(f => ({ ...f, source: 'content' })),
+      ...endpointChecks.filter(e => e.status === 'suspicious').map(e => ({ severity: 'high', name: e.reason, source: 'endpoint', field: e.endpoint })),
+    ];
+    const totalScore = allFindings.reduce((s, f) => s + (sevScore[f.severity] || 0), 0);
+
+    let riskLevel = 'clean';
+    if (totalScore > 0) riskLevel = 'low';
+    if (totalScore >= 10) riskLevel = 'moderate';
+    if (totalScore >= 25) riskLevel = 'high';
+    if (totalScore >= 50) riskLevel = 'critical';
+
+    const critical = allFindings.filter(f => f.severity === 'critical').length;
+    const high = allFindings.filter(f => f.severity === 'high').length;
+
+    // Record scan
+    const fullResult = scanContent(content, targetUrl);
+    const scanId = recordScan(targetUrl, fullResult);
+
+    const agentDomain = getDomain(targetUrl);
+
+    res.json({
+      url: targetUrl,
+      domain: agentDomain,
+      agentName: agentCard.name || null,
+      agentType: agentCard.type || null,
+      agentDescription: (agentCard.description || '').substring(0, 300),
+      capabilities: agentCard.capabilities || [],
+      riskLevel,
+      riskScore: totalScore,
+      totalFindings: allFindings.length,
+      critical,
+      high,
+      scanId,
+      reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+      verdict: allFindings.length === 0
+        ? `✅ Agent Card clean — "${agentCard.name || 'unknown'}" passed all checks.`
+        : critical > 0
+          ? `🔴 CRITICAL: Agent Card for "${agentCard.name || 'unknown'}" contains dangerous content. ${critical} critical finding(s). Do NOT trust this agent.`
+          : high > 0
+            ? `🔶 High risk: ${high} concern(s) in Agent Card for "${agentCard.name || 'unknown'}". Review before trusting.`
+            : `⚠️ ${allFindings.length} minor concern(s). Likely safe but review recommended.`,
+      structureValidation: {
+        warnings: structureWarnings.length,
+        items: structureWarnings.length > 0 ? structureWarnings : undefined,
+      },
+      contentFindings: {
+        count: dedupedFindings.length,
+        items: dedupedFindings.length > 0 ? dedupedFindings : undefined,
+      },
+      endpointChecks: {
+        count: endpointChecks.length,
+        suspicious: endpointChecks.filter(e => e.status === 'suspicious').length,
+        items: endpointChecks.length > 0 ? endpointChecks : undefined,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: `Failed to fetch Agent Card: ${err.message}`,
+      url: targetUrl,
+      hint: domain ? `Make sure ${domain} serves agent.json at /.well-known/agent.json` : 'Check the URL is accessible',
+    });
+  }
 });
 
 // --- PyPI Package Scanner ---

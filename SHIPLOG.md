@@ -1,5 +1,19 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (10:00 AM) — Interactive API Documentation Page (/docs)
+**What:** Full interactive API documentation at `GET /docs` — a beautiful, comprehensive reference page for every SkillAudit endpoint.
+**Features:**
+- Sidebar navigation with all endpoints organized by category (Gate, Scanning, Results, Policy, Intelligence, Reference)
+- Syntax-highlighted request/response examples with realistic data
+- **Try-it-out forms** — live API calls from the docs page (gate check, quick scan)
+- Copy-paste curl commands for every endpoint
+- Parameter tables with types, required/optional flags, and descriptions
+- Full coverage: gate, bulk gate, all 8 scan modes, policy engine, certificates, SARIF, reputation, threat feed, badges, CLI usage, MCP server config, GitHub Action setup, error codes
+- Scroll-spy sidebar highlights active section
+- Mobile-responsive layout with collapsible nav
+- Dark theme matching the SkillAudit brand
+**Why:** SkillAudit had 40+ endpoints but no human-readable documentation page. The OpenAPI spec existed but nobody reads raw JSON specs. Every infrastructure service that gets adopted has great docs — Stripe, Twilio, Cloudflare. Docs are the conversion layer: they turn "I found this tool" into "I'm integrating this tool." The try-it-out forms mean developers can test the API without leaving the page. The curl examples mean they can copy-paste into their terminal. The organized sidebar means they can find what they need in seconds. This is how you reduce friction to zero.
+
 ## 2026-02-21 (7:00 AM) — Bulk Gate Endpoint (Multi-Skill Security Check)
 **What:** `POST /gate/bulk` — check multiple skills in a single call, get one composite allow/deny decision.
 **Request:** `{ urls: ["url1", "url2", ...], threshold: "moderate" }` (max 20 URLs)

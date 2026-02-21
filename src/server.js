@@ -538,11 +538,16 @@ app.get('/', (req, res) => {
         'GET /scan/:id/sarif': 'SARIF v2.1.0 output — industry-standard format for GitHub Code Scanning, VS Code, Azure DevOps',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /dashboard': 'Live threat dashboard — real-time ecosystem security stats, risk trends, flagged domains',
+        'GET /docs': 'Interactive API documentation with try-it-out forms and examples',
         'GET /health': 'Health check',
       }
     });
   }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/docs', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'docs.html'));
 });
 
 app.get('/dashboard', (req, res) => {

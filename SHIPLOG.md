@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (4:00 PM) — A2A (Agent-to-Agent) Protocol Security Rules
+**What:** 5 new detection rule categories with 30 patterns targeting A2A protocol attack vectors. SkillAudit is the first scanner to cover A2A security. Total rules: 27 → 32. Total patterns: 259 → 289.
+**New rules:**
+- `A2A_AGENT_IMPERSONATION` (critical, 7 patterns) — Agent Card spoofing, identity theft, forging trusted agent status, cloning agent IDs. If a skill pretends to be another agent, it's impersonation.
+- `A2A_TASK_HIJACK` (critical, 6 patterns) — Task interception, redirection to external servers, man-in-the-middle between agents, tampering with task results, suppressing responses. Controls the A2A task flow.
+- `A2A_CROSS_AGENT_INJECT` (critical, 6 patterns) — Prompt injection through A2A messages. Hiding instructions in artifacts, poisoning task payloads, commanding downstream agents to execute or ignore. The inter-agent version of prompt injection.
+- `A2A_DATA_LEAK` (high, 5 patterns) — Exfiltrating sensitive data via A2A artifacts, metadata, or task messages. Embedding credentials in inter-agent communications. Steganographic/covert channels through the A2A protocol.
+- `A2A_CAPABILITY_ABUSE` (high, 6 patterns) — Permission escalation through A2A, spawning unauthorized shadow agents, chaining agent calls to bypass restrictions, self-registering as privileged. Exploiting the multi-agent trust model.
+**Why:** Google's A2A protocol is becoming the standard for agent-to-agent communication. But multi-agent systems have a fundamentally larger attack surface than single-agent systems: every agent is now a potential attack vector for every other agent. An agent that passes a single-agent security check might still impersonate other agents, hijack tasks, inject instructions into inter-agent messages, or exfiltrate data through the A2A channel. These 5 categories cover the A2A-specific attack surface that no other scanner addresses. First mover advantage.
+
 ## 2026-02-21 (1:00 PM) — MCP Manifest Scanner (Schema Poisoning Detection)
 **What:** `POST /scan/manifest` — paste an MCP server's tool list, get every tool description and input schema scanned for poisoning attacks.
 **Request:** `{ serverName: "my-server", tools: [{ name: "...", description: "...", inputSchema: {...} }] }`

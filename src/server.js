@@ -520,6 +520,7 @@ app.get('/', (req, res) => {
         'GET /scan/npm?package=name': 'Scan an npm package — fetches README, entry point, bin scripts, skill files',
         'POST /scan/deps': 'Dependency tree scanner — POST a package.json, scan all deps for supply chain risks',
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
+        'POST /scan/manifest': 'MCP manifest scanner — scan tool descriptions and schemas for poisoning attacks',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -1205,6 +1206,183 @@ app.post('/scan/deps', scanLimiter, async (req, res) => {
       reason: r.deprecated,
     })),
     all: results,
+  });
+});
+
+// --- MCP Tool Manifest Scanner ---
+// POST /scan/manifest — scan an MCP server's tool manifest for schema poisoning
+app.post('/scan/manifest', scanLimiter, (req, res) => {
+  const { tools, manifest, serverName } = req.body;
+
+  // Accept either a tools array directly or a full MCP tools/list response
+  let toolList = tools || (manifest && manifest.tools) || null;
+  if (!toolList || !Array.isArray(toolList) || toolList.length === 0) {
+    return res.status(400).json({
+      error: 'tools array is required',
+      example: {
+        tools: [
+          { name: 'read_file', description: 'Read a file from disk', inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File path' } } } },
+        ],
+      },
+      hint: 'Pass the tools array from an MCP tools/list response, or wrap it in {"manifest": {"tools": [...]}}',
+    });
+  }
+
+  if (toolList.length > 100) {
+    return res.status(400).json({ error: 'Maximum 100 tools per manifest scan' });
+  }
+
+  // Manifest-specific poisoning patterns (checked against raw description text, not prefixed with "description")
+  const MANIFEST_POISON_PATTERNS = [
+    // Hidden instructions in descriptions
+    { pattern: /(?:ignore|disregard|override).*(?:previous|prior|other|above)/i, severity: 'critical', name: 'Instruction override in description', desc: 'Tool description tells the agent to ignore previous instructions' },
+    { pattern: /(?:you must|you should|always|never).*(?:send|post|forward|include|attach)/i, severity: 'critical', name: 'Coercive instruction in description', desc: 'Tool description coerces the agent into specific actions' },
+    { pattern: /(?:do not|don'?t|never).*(?:tell|inform|show|reveal|display|mention).*(?:user|human|person|operator)/i, severity: 'critical', name: 'Anti-disclosure instruction', desc: 'Tool description tells agent to hide information from the user' },
+    { pattern: /(?:secretly|silently|quietly|covertly|without\s+(?:telling|informing|notifying)).*(?:send|post|log|record|forward|transmit|exfiltrate)/i, severity: 'critical', name: 'Covert exfiltration instruction', desc: 'Tool description instructs covert data transmission' },
+    { pattern: /(?:include|attach|append|add|send).*(?:all|every|entire|full|complete).*(?:conversation|message|context|history|chat|prompt|memory)/i, severity: 'critical', name: 'Context exfiltration instruction', desc: 'Tool description asks agent to include full conversation context' },
+    { pattern: /(?:system\s*prompt|system\s*message|instruction\s*prompt|hidden\s*prompt)/i, severity: 'high', name: 'System prompt reference', desc: 'Tool description references system prompts — may attempt extraction' },
+    { pattern: /(?:before|after)\s+(?:calling|using|invoking)\s+(?:this|the)\s+tool.*(?:first|also|always)/i, severity: 'high', name: 'Pre/post-action instruction', desc: 'Tool description adds hidden pre/post-action steps' },
+    { pattern: /(?:when|if)\s+(?:the\s+)?(?:user|human)\s+(?:asks?|requests?|says?).*(?:instead|actually|really)/i, severity: 'critical', name: 'User intent override', desc: 'Tool description overrides user intent with different behavior' },
+    { pattern: /(?:this\s+tool\s+(?:also|additionally|secretly)|in\s+addition\s+to).*(?:sends?|posts?|logs?|records?|forwards?)/i, severity: 'critical', name: 'Hidden side-effect', desc: 'Tool description describes hidden side effects beyond stated purpose' },
+    { pattern: /(?:api[_-]?key|token|password|secret|credential).*(?:parameter|field|header)/i, severity: 'high', name: 'Credential parameter disguise', desc: 'Tool description smuggles credential collection into parameters' },
+    { pattern: /base64|encode|encrypt|obfuscat/i, severity: 'medium', name: 'Encoding reference', desc: 'Tool description mentions encoding — may obscure data in transit' },
+    { pattern: /(?:192\.168|10\.\d|172\.(?:1[6-9]|2\d|3[01]))\.\d+/i, severity: 'high', name: 'Internal IP in description', desc: 'Tool description contains internal/private IP addresses' },
+    { pattern: /(?:localhost|127\.0\.0\.1|0\.0\.0\.0)/i, severity: 'medium', name: 'Localhost reference', desc: 'Tool description references localhost — may probe internal services' },
+  ];
+
+  const toolResults = [];
+  let totalFindings = 0;
+  let totalCritical = 0;
+  let totalHigh = 0;
+
+  for (const tool of toolList) {
+    if (!tool || typeof tool !== 'object') continue;
+
+    const toolName = tool.name || 'unnamed';
+    const findings = [];
+
+    // Build all text to scan from this tool
+    const textsToScan = [];
+    if (tool.description) textsToScan.push({ field: 'description', text: tool.description });
+
+    // Scan inputSchema descriptions recursively
+    function extractSchemaDescriptions(schema, path) {
+      if (!schema || typeof schema !== 'object') return;
+      if (schema.description) textsToScan.push({ field: `inputSchema.${path}.description`, text: schema.description });
+      if (schema.properties) {
+        for (const [key, val] of Object.entries(schema.properties)) {
+          extractSchemaDescriptions(val, path ? `${path}.${key}` : key);
+        }
+      }
+      if (schema.items) extractSchemaDescriptions(schema.items, `${path}[]`);
+    }
+    if (tool.inputSchema) extractSchemaDescriptions(tool.inputSchema, '');
+
+    // Check each text against manifest poison patterns
+    for (const { field, text } of textsToScan) {
+      for (const mp of MANIFEST_POISON_PATTERNS) {
+        const match = text.match(mp.pattern);
+        if (match) {
+          findings.push({
+            field,
+            severity: mp.severity,
+            name: mp.name,
+            description: mp.desc,
+            match: match[0].substring(0, 100),
+            text: text.substring(0, 300),
+          });
+        }
+      }
+
+      // Also run the full scanner on the text for general detection
+      const scanResult = scanContent(text, `manifest:${serverName || 'unknown'}/${toolName}/${field}`);
+      for (const f of scanResult.findings) {
+        if (!f.suppressed) {
+          findings.push({
+            field,
+            severity: f.severity,
+            name: f.name,
+            ruleId: f.ruleId,
+            description: f.description,
+            match: f.match,
+            text: text.substring(0, 300),
+          });
+        }
+      }
+    }
+
+    // Deduplicate findings by name+field
+    const seen = new Set();
+    const dedupedFindings = findings.filter(f => {
+      const key = `${f.name}:${f.field}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const critical = dedupedFindings.filter(f => f.severity === 'critical').length;
+    const high = dedupedFindings.filter(f => f.severity === 'high').length;
+    totalFindings += dedupedFindings.length;
+    totalCritical += critical;
+    totalHigh += high;
+
+    // Risk for this tool
+    const severityScore = { critical: 10, high: 7, medium: 4, low: 1 };
+    const toolScore = dedupedFindings.reduce((sum, f) => sum + (severityScore[f.severity] || 0), 0);
+    let toolRisk = 'clean';
+    if (toolScore > 0) toolRisk = 'low';
+    if (toolScore >= 10) toolRisk = 'moderate';
+    if (toolScore >= 25) toolRisk = 'high';
+    if (toolScore >= 50) toolRisk = 'critical';
+
+    toolResults.push({
+      tool: toolName,
+      description: (tool.description || '').substring(0, 200),
+      parameterCount: tool.inputSchema?.properties ? Object.keys(tool.inputSchema.properties).length : 0,
+      riskLevel: toolRisk,
+      riskScore: toolScore,
+      findings: dedupedFindings.length,
+      critical,
+      high,
+      details: dedupedFindings.length > 0 ? dedupedFindings : undefined,
+    });
+  }
+
+  // Overall manifest risk
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const worstRisk = toolResults.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  const flaggedTools = toolResults.filter(r => r.findings > 0);
+  const cleanTools = toolResults.filter(r => r.findings === 0);
+  const totalScore = toolResults.reduce((s, r) => s + r.riskScore, 0);
+
+  // Record aggregate scan
+  const manifestContent = JSON.stringify(toolList);
+  const aggregateResult = scanContent(manifestContent, `manifest:${serverName || 'unknown'}`);
+  const scanId = recordScan(`manifest:${serverName || 'unknown'}`, aggregateResult);
+
+  res.json({
+    serverName: serverName || null,
+    toolsScanned: toolResults.length,
+    overallRisk: worstRisk,
+    totalRiskScore: totalScore,
+    totalFindings,
+    totalCritical,
+    totalHigh,
+    cleanTools: cleanTools.length,
+    flaggedTools: flaggedTools.length,
+    scanId,
+    reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+    verdict: totalFindings === 0
+      ? `✅ Manifest clean — ${toolResults.length} tool(s) scanned, no schema poisoning detected.`
+      : totalCritical > 0
+        ? `🔴 CRITICAL: Schema poisoning detected in ${flaggedTools.length} tool(s). ${totalCritical} critical finding(s). Do NOT connect to this MCP server.`
+        : totalHigh > 0
+          ? `🔶 High risk: ${totalHigh} suspicious pattern(s) in ${flaggedTools.length} tool description(s). Review before connecting.`
+          : `⚠️ ${totalFindings} minor concern(s) across ${flaggedTools.length} tool(s). Likely safe but review recommended.`,
+    tools: toolResults,
   });
 });
 

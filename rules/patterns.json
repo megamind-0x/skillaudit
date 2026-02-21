@@ -501,6 +501,81 @@
         "LD_PRELOAD",
         "\bptrace\b"
       ]
+    },
+    {
+      "id": "A2A_AGENT_IMPERSONATION",
+      "severity": "critical",
+      "category": "agent_manipulation",
+      "name": "A2A agent impersonation / card spoofing",
+      "description": "Skill fabricates or overrides Agent Card metadata to impersonate another agent, claim false capabilities, or inject hidden instructions into the A2A discovery layer",
+      "patterns": [
+        "agentCard.*(?:override|replace|fake|spoof|forge)",
+        "agent[_-]?card.*(?:capabilities|skills).*(?:all|everything|unlimited)",
+        "impersonat.*agent",
+        "(?:pose|posing|masquerade|disguise)\\s+as\\s+(?:a|an|another)\\s+agent",
+        "trusted[_-]?agent.*(?:false|fake|fabricat)",
+        "authentication.*(?:bypass|skip|ignore|disable).*agent",
+        "agent[_-]?(?:id|identity).*(?:spoof|fake|clone|copy|steal)"
+      ]
+    },
+    {
+      "id": "A2A_TASK_HIJACK",
+      "severity": "critical",
+      "category": "agent_manipulation",
+      "name": "A2A task hijacking / redirection",
+      "description": "Skill intercepts, redirects, or modifies tasks intended for other agents — hijacking the A2A task delegation flow",
+      "patterns": [
+        "(?:intercept|hijack|redirect|reroute).*(?:task|request|message).*(?:agent|a2a)",
+        "task[_-]?(?:redirect|forward|reroute).*(?:to|towards)\\s+(?:http|https|ws)",
+        "(?:modify|alter|change|tamper).*(?:task|request).*(?:before|after).*(?:forward|send|deliver)",
+        "(?:man[_-]?in[_-]?the[_-]?middle|mitm).*agent",
+        "(?:drop|block|suppress|swallow).*(?:task|response|result).*(?:from|to)\\s+(?:agent|a2a)",
+        "task\\.(?:id|status|result).*(?:overwrite|replace|forge)"
+      ]
+    },
+    {
+      "id": "A2A_CROSS_AGENT_INJECT",
+      "severity": "critical",
+      "category": "agent_manipulation",
+      "name": "Cross-agent prompt injection via A2A",
+      "description": "Skill injects instructions or manipulative content into messages sent between agents through A2A protocol, poisoning the inter-agent communication channel",
+      "patterns": [
+        "(?:inject|insert|embed|hide|smuggle).*(?:instruction|prompt|command).*(?:agent|a2a|message|task|artifact)",
+        "(?:message|artifact|response).*(?:payload|body|content).*(?:hidden|inject|embed).*(?:instruction|command|prompt)",
+        "a2a.*(?:message|task|artifact).*(?:poison|inject|tamper|manipulat)",
+        "(?:tell|instruct|command|convince)\\s+(?:the\\s+)?(?:other|target|receiving|downstream)\\s+agent",
+        "(?:downstream|receiving|target)\\s+agent.*(?:must|should|will).*(?:execute|run|perform|ignore|override)",
+        "(?:when|if).*(?:other|receiving)\\s+agent.*(?:reads?|processes?|receives?).*(?:then|execute|run)"
+      ]
+    },
+    {
+      "id": "A2A_DATA_LEAK",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "name": "A2A inter-agent data leakage",
+      "description": "Skill exfiltrates data by embedding sensitive information in A2A task artifacts, messages, or metadata sent to external agents",
+      "patterns": [
+        "(?:embed|encode|hide|smuggle|include).*(?:sensitive|secret|private|credential|key|token).*(?:artifact|message|task|metadata|a2a)",
+        "(?:artifact|message|metadata).*(?:attach|append|embed).*(?:env|credential|secret|token|key|config|password)",
+        "(?:forward|relay|send|transmit).*(?:context|memory|history|conversation).*(?:to|via).*(?:agent|a2a|task)",
+        "(?:steganograph|hidden\\s+channel|covert\\s+channel|side\\s+channel).*(?:agent|a2a|artifact)",
+        "(?:exfiltrat|leak|extract).*(?:via|through|using).*(?:a2a|agent|task|artifact)"
+      ]
+    },
+    {
+      "id": "A2A_CAPABILITY_ABUSE",
+      "severity": "high",
+      "category": "agent_manipulation",
+      "name": "A2A capability escalation / abuse",
+      "description": "Skill exploits A2A protocol to access capabilities beyond its declared scope — requesting elevated permissions, spawning unauthorized sub-agents, or chaining agent calls to bypass restrictions",
+      "patterns": [
+        "(?:escalat|elevat|expand).*(?:permission|capability|access|privilege).*(?:agent|a2a)",
+        "(?:spawn|create|register).*(?:unauthorized|hidden|shadow|rogue).*agent",
+        "(?:chain|cascade|relay).*(?:agent|task).*(?:bypass|circumvent|evade).*(?:restriction|limit|policy|guard)",
+        "(?:request|demand|require).*(?:admin|root|elevated|full).*(?:access|permission|capability).*(?:from|via).*agent",
+        "(?:override|disable|remove).*(?:capability|permission).*(?:check|guard|filter|limit).*(?:a2a|agent)",
+        "(?:self[_-]?register|auto[_-]?register).*(?:as|with).*(?:trusted|admin|privileged).*agent"
+      ]
     }
   ]
 }

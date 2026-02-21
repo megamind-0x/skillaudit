@@ -1,5 +1,10 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (1:00 AM) — Complete README Rewrite
+**What:** Full rewrite of the GitHub README to reflect the actual product. The old README mentioned "15+ attack patterns" when we have 32 rules and 289 patterns. It was missing: gate, bulk gate, manifest scanner, agent-card scanner, A2A rules, policy engine, npm/pypi/dep scanning, reputation, threat feed, CLI subcommands, --fail-on, --markdown.
+**New README covers:** Quick start (gate → scan → bulk → policy), full detection rules table (32 categories), CLI with all subcommands, complete API reference, MCP server (simplified npx setup), GitHub Action, CI/CD integration patterns, risk levels.
+**Why:** The README is the #1 discovery surface. Anyone who finds SkillAudit on GitHub or npm sees the README first. A README that shows 30% of the product converts 30% of potential users. Now it shows everything.
+
 ## 2026-02-21 (10:00 PM) — CLI v0.9.0: Gate, Manifest, Markdown, Fail-On (Published to npm)
 **What:** Major CLI upgrade making `npx skillaudit` a first-class CI/CD tool. Published to npm as `skillaudit@0.9.0`.
 **New subcommands:**

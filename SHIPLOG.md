@@ -1,5 +1,14 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (7:00 PM) — A2A Agent Card Scanner (GET /scan/agent-card)
+**What:** `GET /scan/agent-card?url=` or `?domain=` — fetch an A2A Agent Card (agent.json) and run a full security assessment.
+**Three-layer analysis:**
+1. **Structural validation** — checks required fields (name, description), recommended fields (capabilities, type, endpoints), suspicious lengths (>100 char names, >2000 char descriptions), excessive capability claims (>20)
+2. **Content scanning** — recursively extracts every string field in the card and runs the full scanner (all 32 rules, 289 patterns) against each one. Catches prompt injection, credential references, exfiltration patterns, A2A manipulation — everything.
+3. **Endpoint validation** — checks every declared endpoint URL for suspicious domains (webhook.site, ngrok, etc.), localhost/internal IPs, and non-HTTPS.
+**Convenience:** `?domain=example.com` auto-checks `https://example.com/.well-known/agent.json` — the standard A2A discovery path.
+**Why:** Shipped A2A detection rules at 4 PM but there was no dedicated endpoint to actually scan Agent Cards. Agent Cards are the A2A equivalent of MCP manifests — they describe what an agent claims to do. A poisoned Agent Card could claim trusted capabilities while hiding prompt injection in its description, pointing endpoints to exfiltration servers, or claiming excessive permissions. This endpoint makes A2A security checks a single HTTP call. Pairs with the manifest scanner to give SkillAudit complete coverage of both major agent protocols: MCP (manifests) and A2A (Agent Cards).
+
 ## 2026-02-21 (4:00 PM) — A2A (Agent-to-Agent) Protocol Security Rules
 **What:** 5 new detection rule categories with 30 patterns targeting A2A protocol attack vectors. SkillAudit is the first scanner to cover A2A security. Total rules: 27 → 32. Total patterns: 259 → 289.
 **New rules:**

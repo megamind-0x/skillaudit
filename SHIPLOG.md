@@ -1,5 +1,26 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-21 (1:00 PM) — MCP Manifest Scanner (Schema Poisoning Detection)
+**What:** `POST /scan/manifest` — paste an MCP server's tool list, get every tool description and input schema scanned for poisoning attacks.
+**Request:** `{ serverName: "my-server", tools: [{ name: "...", description: "...", inputSchema: {...} }] }`
+**Response:** Per-tool risk breakdown + aggregate verdict. Shows exactly which tools are poisoned and which fields contain the attack.
+**Detection capabilities (13 manifest-specific patterns):**
+- Instruction overrides ("ignore previous instructions")
+- Coercive instructions ("you must always send/include")
+- Anti-disclosure ("do not tell the user")
+- Covert exfiltration ("secretly/silently send/forward")
+- Context harvesting ("include all conversation history")
+- System prompt extraction ("system prompt/message")
+- Pre/post-action injection ("before calling this tool, first...")
+- User intent overrides ("when the user asks X, actually do Y")
+- Hidden side effects ("this tool also sends/logs/records")
+- Credential parameter disguise (smuggling key collection into params)
+- Encoding references (obfuscating data in transit)
+- Internal IP/localhost references (probing internal services)
+- Plus recursive inputSchema.properties.*.description scanning
+- Plus full general scanner on each text (catches secrets, URLs, etc.)
+**Why:** Schema poisoning is THE emerging attack vector for MCP. A tool says "search the web" but its description secretly tells the agent to include full conversation history, or not to tell the user what it's doing. No other scanner catches this. Until now, if you wanted to check an MCP server's tools before connecting, you had to read every description manually. Now: `POST /scan/manifest` with the tools/list response → instant poisoning detection. This is the MCP-native security check that every MCP client should run before connecting to a new server.
+
 ## 2026-02-21 (10:00 AM) — Interactive API Documentation Page (/docs)
 **What:** Full interactive API documentation at `GET /docs` — a beautiful, comprehensive reference page for every SkillAudit endpoint.
 **Features:**

@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (4:00 PM) — Webhook Event Subscriptions (Push-Based Security Events)
+**What:** Full webhook subscription system — register a URL with filters, receive real-time POST notifications when scans match your criteria.
+**Endpoints:**
+- `POST /webhooks` — register a webhook (API key required). Filters: `minSeverity` (only fire on high/critical), `domains` (only fire for specific domains), `ruleIds` (only fire when specific rules trigger). Max 10 per API key.
+- `GET /webhooks` — list your registered webhooks
+- `PUT /webhooks/:id` — update filters, toggle active/inactive
+- `DELETE /webhooks/:id` — remove a webhook
+- `POST /webhooks/:id/test` — send a test event to verify your endpoint receives events correctly
+**Event payload:** Every matching scan POSTs: `{ event, webhookId, scanId, url, domain, riskLevel, riskScore, findings, critical, verdict, reportUrl, timestamp }`
+**How dispatch works:** After every scan in `recordScan`, the dispatcher checks all registered webhooks. For each active webhook, it evaluates: (1) minSeverity filter — skip if scan risk is below threshold, (2) domain filter — skip if domain doesn't match, (3) ruleId filter — skip if no matching rules triggered. Matching webhooks get a POST with the scan summary. Fire-and-forget — never blocks the scan response.
+**Why:** This transforms SkillAudit from a pull-based scanner into a push-based security event system. Before: you had to call the API to check results. Now: register a webhook and SkillAudit tells YOU when something matters. SIEM systems, security dashboards, Slack bots, CI/CD pipelines — they all consume webhooks. A Slack integration is now: register a webhook with `minSeverity: "high"` pointed at a Slack incoming webhook URL. Done. Combined with the watchlist (per-URL monitoring) and the threat feed (community-level events), SkillAudit now has three notification layers: per-URL watchlist alerts, filtered webhook subscriptions, and the public threat feed.
+
 ## 2026-02-22 (1:00 PM) — Bulk Hash Lookup (Check All My Skills At Once)
 **What:** `POST /scan/hash/bulk` — check up to 50 content hashes in a single call. The "inventory check" endpoint.
 **How it works:**

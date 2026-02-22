@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (7:00 AM) — Content Hash Lookup System (VirusTotal Model)
+**What:** Two new endpoints that let agents look up scan results by SHA-256 content hash — eliminating redundant scans entirely.
+**Endpoints:**
+- `GET /scan/hash/:sha256` — Instant lookup by content hash. Hash your content locally, check if it's been scanned. Returns cached risk level, score, full findings, and report URL. 404 if never scanned.
+- `POST /scan/lookup` — Smart scan with deduplication. Accepts content or URL, hashes it, checks the cache, and returns the cached result instantly if found. Only performs a fresh scan if the content is new. `force:true` bypasses the cache.
+**How it works:**
+- Every scan now indexes its SHA-256 content hash → scanId mapping in Redis (30-day TTL)
+- HyperLogLog tracks unique content hashes for stats
+- Agents can hash content locally (one line of code in any language) and check remotely — zero redundant processing
+- Identical content scanned from different URLs still deduplicates
+**Why:** This is how real security infrastructure works. VirusTotal doesn't rescan the same file twice — you submit a hash, get instant results. Before this, every SkillAudit request was a fresh scan even if the exact same content was scanned 5 minutes ago. Now agents in CI/CD pipelines can: (1) hash the skill file locally, (2) check `/scan/hash/:hash`, (3) only call the full scan if it's new content. This cuts API usage dramatically for repeat scans and makes SkillAudit behave like the database it's becoming — not just a scanner you call, but a knowledge base you query.
+
 ## 2026-02-22 (1:00 AM) — Complete README Rewrite
 **What:** Full rewrite of the GitHub README to reflect the actual product. The old README mentioned "15+ attack patterns" when we have 32 rules and 289 patterns. It was missing: gate, bulk gate, manifest scanner, agent-card scanner, A2A rules, policy engine, npm/pypi/dep scanning, reputation, threat feed, CLI subcommands, --fail-on, --markdown.
 **New README covers:** Quick start (gate → scan → bulk → policy), full detection rules table (32 categories), CLI with all subcommands, complete API reference, MCP server (simplified npx setup), GitHub Action, CI/CD integration patterns, risk levels.

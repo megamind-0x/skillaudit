@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (10:00 AM) — URL Scan History + Drift Detection
+**What:** Agents can now track how a URL's risk evolves over time and detect when a skill gets riskier — the key signal for supply chain attacks.
+**Endpoints:**
+- `GET /scan/history/url?url=` — Returns complete scan history for any URL: every past scan with risk level, score, findings count. Includes trend analysis (worsening/improving/stable), peak risk ever seen, score trend averages, first/last seen dates.
+- `/gate` now includes a `drift` field in responses — automatically compares against the previous scan of the same URL and returns: direction (worsened/improved/stable/changed), previous risk/score, score delta, findings delta, previous scan ID and date.
+**How it works:**
+- Every scan now tracks URL → scan history in Redis sorted sets (score = timestamp, 90-day TTL, last 50 scans per URL)
+- Trend analysis compares recent scan averages vs older averages to detect gradual drift
+- Peak risk tracking surfaces the worst-case-ever for a URL
+- Drift computation in `/gate` is zero-cost — single Redis lookup, runs in parallel with domain reputation
+**Why:** Supply chain attacks work by building trust first. A skill starts clean, gets adopted, then turns malicious in an update. Without history, every scan is isolated — you can't tell the difference between "always risky" and "just became risky." The drift field in `/gate` is the signal that matters: `"direction": "worsened"` means "this was safer last time you checked." That's the supply chain attack indicator. Combined with the watchlist (which uses webhooks for risk changes), this gives SkillAudit complete monitoring coverage: real-time drift in `/gate`, historical trends in `/scan/history/url`, and proactive alerting via watchlist webhooks.
+
 ## 2026-02-22 (7:00 AM) — Content Hash Lookup System (VirusTotal Model)
 **What:** Two new endpoints that let agents look up scan results by SHA-256 content hash — eliminating redundant scans entirely.
 **Endpoints:**

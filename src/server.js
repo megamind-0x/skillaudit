@@ -630,6 +630,7 @@ app.get('/', (req, res) => {
         'POST /webhooks/:id/test': 'Send a test event to verify your webhook endpoint (API key required)',
         'GET /certificate/:id': 'Signed audit certificate — cryptographic proof a skill was scanned',
         'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
+        'GET /scan/:id/card.svg': 'Visual scan summary card (SVG) — embeddable in READMEs, Slack, Discord, docs',
         'GET /scan/:id/sarif': 'SARIF v2.1.0 output — industry-standard format for GitHub Code Scanning, VS Code, Azure DevOps',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /dashboard': 'Live threat dashboard — real-time ecosystem security stats, risk trends, flagged domains',
@@ -2131,6 +2132,83 @@ app.get('/scan/:id/sarif', async (req, res) => {
   if (!result) return res.status(404).json({ error: 'Scan not found' });
   const sarif = toSarif(result, { includeSuppressed: req.query.suppressed === 'true' });
   res.type('application/sarif+json').json(sarif);
+});
+
+// --- Scan Summary Card (SVG) ---
+// Embeddable visual card for READMEs, Slack, Discord, docs, tweets
+app.get('/scan/:id/card.svg', async (req, res) => {
+  const result = await getScanResult(req.params.id);
+  if (!result) {
+    res.type('image/svg+xml').send(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="80"><rect width="400" height="80" rx="8" fill="#1a1a2e"/><text x="200" y="45" text-anchor="middle" fill="#888" font-family="system-ui" font-size="14">Scan not found</text></svg>`);
+    return;
+  }
+
+  const risk = result.riskLevel || 'unknown';
+  const score = result.riskScore || 0;
+  const total = result.summary?.total || 0;
+  const crit = result.summary?.critical || 0;
+  const high = result.summary?.high || 0;
+  const med = result.summary?.medium || 0;
+  const source = (result.source || result.url || 'direct-input').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const shortSource = source.length > 50 ? '...' + source.slice(-47) : source;
+  const version = result.version || '0.8';
+  const date = result.scannedAt ? new Date(result.scannedAt).toISOString().slice(0, 10) : '';
+
+  const colors = {
+    clean: { bg: '#0d4f2b', accent: '#22c55e', label: 'CLEAN' },
+    low: { bg: '#3b3800', accent: '#eab308', label: 'LOW RISK' },
+    moderate: { bg: '#4a2c00', accent: '#f97316', label: 'MODERATE' },
+    high: { bg: '#4a1500', accent: '#ef4444', label: 'HIGH RISK' },
+    critical: { bg: '#5c0011', accent: '#dc2626', label: 'CRITICAL' },
+  };
+  const c = colors[risk] || colors.moderate;
+
+  // Top findings for display (max 3)
+  const topFindings = (result.findings || []).slice(0, 3).map(f =>
+    `${f.severity === 'critical' ? '🔴' : f.severity === 'high' ? '🟠' : '🟡'} ${(f.name || f.ruleId).replace(/&/g, '&amp;').replace(/</g, '&lt;')}`.substring(0, 55)
+  );
+
+  const findingsSection = topFindings.length > 0
+    ? topFindings.map((f, i) => `<text x="20" y="${138 + i * 18}" fill="#ccc" font-family="monospace,system-ui" font-size="11">${f}</text>`).join('')
+    : `<text x="20" y="138" fill="#6b7" font-family="system-ui" font-size="12">✅ No issues detected</text>`;
+
+  const cardHeight = 108 + Math.max(topFindings.length, 1) * 18 + 30;
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="${cardHeight}" viewBox="0 0 480 ${cardHeight}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#16162a"/>
+      <stop offset="100%" stop-color="#0f0f1e"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="${cardHeight}" rx="12" fill="url(#bg)" stroke="#333" stroke-width="1"/>
+  <!-- Header bar -->
+  <rect x="0" y="0" width="480" height="56" rx="12" fill="${c.bg}" opacity="0.8"/>
+  <rect x="0" y="40" width="480" height="16" fill="${c.bg}" opacity="0.8"/>
+  <!-- Shield icon area -->
+  <text x="20" y="38" font-size="22" fill="${c.accent}" font-family="system-ui" font-weight="bold">🛡️ SkillAudit</text>
+  <!-- Risk badge -->
+  <rect x="${480 - 20 - c.label.length * 9}" y="16" width="${c.label.length * 9 + 16}" height="26" rx="6" fill="${c.accent}" opacity="0.9"/>
+  <text x="${480 - 12 - c.label.length * 4.5}" y="34" text-anchor="middle" fill="#000" font-family="system-ui" font-weight="bold" font-size="12">${c.label}</text>
+  <!-- Source -->
+  <text x="20" y="78" fill="#999" font-family="system-ui" font-size="11">${shortSource}</text>
+  <!-- Stats row -->
+  <text x="20" y="100" fill="#eee" font-family="system-ui" font-size="13">Score: <tspan font-weight="bold" fill="${c.accent}">${score}</tspan></text>
+  <text x="130" y="100" fill="#eee" font-family="system-ui" font-size="13">Findings: <tspan font-weight="bold">${total}</tspan></text>
+  <text x="260" y="100" fill="#eee" font-family="system-ui" font-size="13">${crit > 0 ? `<tspan fill="#dc2626">●</tspan> ${crit} critical  ` : ''}${high > 0 ? `<tspan fill="#ef4444">●</tspan> ${high} high  ` : ''}${med > 0 ? `<tspan fill="#f97316">●</tspan> ${med} med` : ''}</text>
+  <!-- Divider -->
+  <line x1="20" y1="112" x2="460" y2="112" stroke="#333" stroke-width="1"/>
+  <!-- Top findings -->
+  ${findingsSection}
+  <!-- Footer -->
+  <text x="20" y="${cardHeight - 10}" fill="#555" font-family="system-ui" font-size="10">v${version} • ${date} • skillaudit.vercel.app</text>
+</svg>`;
+
+  res.set({
+    'Content-Type': 'image/svg+xml',
+    'Cache-Control': 'public, max-age=3600',
+  });
+  res.send(svg);
 });
 
 // --- Report Page (HTML) ---

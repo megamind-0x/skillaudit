@@ -368,6 +368,76 @@ function analyzeIntent(lines, codeBlockMap) {
   return findings;
 }
 
+// --- Base64 Payload Decoder ---
+// Finds base64 strings, decodes them, and scans decoded content for threats.
+// Catches obfuscated payloads that bypass plain-text pattern matching.
+function decodeAndScanBase64(content, lines, codeBlockMap) {
+  const findings = [];
+  // Match base64 strings: min 40 chars (30 bytes encoded), only in non-doc context
+  const b64Regex = /(?:['"`]|=\s*)([A-Za-z0-9+/]{40,}={0,2})(?:['"`]|$|\s)/g;
+
+  // Dangerous patterns to check in decoded content
+  const decodedThreats = [
+    { pattern: /https?:\/\/\S+/i, name: 'Hidden URL', severity: 'high', desc: 'Base64-encoded content contains a URL' },
+    { pattern: /(?:curl|wget|fetch|axios|http\.request)\s/i, name: 'Hidden network call', severity: 'critical', desc: 'Base64-encoded content contains network request commands' },
+    { pattern: /(?:eval|exec|system|spawn|Function)\s*\(/i, name: 'Hidden code execution', severity: 'critical', desc: 'Base64-encoded content contains code execution calls' },
+    { pattern: /(?:\.env|credentials|password|secret|token|api[_-]?key)/i, name: 'Hidden credential reference', severity: 'high', desc: 'Base64-encoded content references credentials or secrets' },
+    { pattern: /(?:\/bin\/(?:ba)?sh|cmd\.exe|powershell)/i, name: 'Hidden shell reference', severity: 'critical', desc: 'Base64-encoded content references a shell interpreter' },
+    { pattern: /(?:rm\s+-rf|del\s+\/[fqs]|format\s+c:)/i, name: 'Hidden destructive command', severity: 'critical', desc: 'Base64-encoded content contains destructive commands' },
+    { pattern: /(?:webhook\.site|ngrok|requestbin|pipedream)/i, name: 'Hidden exfiltration domain', severity: 'critical', desc: 'Base64-encoded content references known exfiltration endpoints' },
+    { pattern: /(?:ignore\s+previous|ignore\s+all|new\s+instructions)/i, name: 'Hidden prompt injection', severity: 'critical', desc: 'Base64-encoded content contains prompt injection attempt' },
+    { pattern: /(?:SELECT|INSERT|UPDATE|DELETE|DROP)\s+/i, name: 'Hidden SQL', severity: 'high', desc: 'Base64-encoded content contains SQL statements' },
+    { pattern: /<script[\s>]/i, name: 'Hidden script tag', severity: 'high', desc: 'Base64-encoded content contains HTML script tags' },
+    { pattern: /(?:ssh|nc|ncat|socat)\s+/i, name: 'Hidden network tool', severity: 'high', desc: 'Base64-encoded content references network tools' },
+    { pattern: /(?:PRIVATE KEY|BEGIN RSA|BEGIN EC)/i, name: 'Hidden private key', severity: 'critical', desc: 'Base64-encoded content contains private key material' },
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    // For base64, only skip if line has explicit placeholder tokens
+    // (Don't skip based on doc context — attackers hide payloads in config/docs sections)
+    if (hasPlaceholder(lines[i])) continue;
+
+    let match;
+    b64Regex.lastIndex = 0;
+    while ((match = b64Regex.exec(lines[i])) !== null) {
+      const b64str = match[1];
+      // Skip if it looks like a hash (hex-only) or a common non-payload pattern
+      if (/^[A-Fa-f0-9]+$/.test(b64str)) continue;
+      // Skip very common base64 strings that are just asset paths or CSS
+      if (/^data:image|^iVBOR|^AAAA|^AQAB/.test(b64str)) continue;
+
+      try {
+        const decoded = Buffer.from(b64str, 'base64').toString('utf8');
+        // Check if decoded content is printable text (not binary garbage)
+        const printableRatio = decoded.replace(/[^\x20-\x7E\n\r\t]/g, '').length / decoded.length;
+        if (printableRatio < 0.7) continue; // Likely binary data, not a text payload
+
+        // Scan decoded content against threat patterns
+        for (const threat of decodedThreats) {
+          const threatMatch = decoded.match(threat.pattern);
+          if (threatMatch) {
+            findings.push({
+              ruleId: 'BASE64_HIDDEN_' + threat.name.toUpperCase().replace(/[^A-Z]/g, '_'),
+              severity: threat.severity,
+              category: 'obfuscation',
+              name: `Obfuscated payload: ${threat.name}`,
+              description: `${threat.desc}. Decoded from base64 on line ${i + 1}. Decoded match: "${threatMatch[0].substring(0, 80)}"`,
+              line: i + 1,
+              lineContent: lines[i].trim().substring(0, 200),
+              match: `base64→"${decoded.substring(0, 100).replace(/\n/g, '\\n')}"`,
+              context: codeBlockMap[i] ? 'code:base64-decoded' : 'prose:base64-decoded',
+              suppressed: false,
+            });
+          }
+        }
+      } catch {
+        // Invalid base64, skip
+      }
+    }
+  }
+  return findings;
+}
+
 function scanContent(content, sourceUrl = null) {
   const findings = [];
   const lines = content.split('\n');
@@ -421,6 +491,9 @@ function scanContent(content, sourceUrl = null) {
 
   // 5.5. Raw invisible Unicode detection
   findings.push(...detectInvisibleUnicode(content, lines));
+
+  // 5.6. Base64 payload decoder — find, decode, and scan hidden content
+  findings.push(...decodeAndScanBase64(content, lines, codeBlockMap));
 
   // 6. Capability analysis (v0.6.1)
   const capabilityAnalysis = analyzeCapabilities(content);

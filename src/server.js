@@ -197,6 +197,8 @@ function recordScan(url, result) {
   if (url && url !== 'direct-input') {
     db.trackUrlScan(url, id, result.riskLevel, result.riskScore, result.summary?.total || 0, result.summary?.critical || 0);
   }
+  // Dispatch to webhook subscribers (fire-and-forget)
+  dispatchWebhooks(url, result, id);
   if (result.threatChains) {
     result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
@@ -230,6 +232,58 @@ function recordScan(url, result) {
     }
   }
   return id;
+}
+
+// --- Webhook Dispatch (fires on every scan for matching subscribers) ---
+async function dispatchWebhooks(url, result, scanId) {
+  try {
+    const webhookKeys = await db.getAllWebhookKeys();
+    if (!webhookKeys || webhookKeys.length === 0) return;
+
+    const domain = getDomain(url);
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const riskIdx = riskOrder.indexOf(result.riskLevel);
+
+    for (const key of webhookKeys) {
+      const apiKey = key.replace('webhooks:', '');
+      const hooks = await db.getWebhooks(apiKey);
+      for (const hook of hooks) {
+        if (!hook.active || !hook.url) continue;
+
+        // Check filters
+        if (hook.minSeverity) {
+          const minIdx = riskOrder.indexOf(hook.minSeverity);
+          if (riskIdx < minIdx) continue;
+        }
+        if (hook.domains && hook.domains.length > 0) {
+          if (!domain || !hook.domains.some(d => domain === d || domain.endsWith('.' + d))) continue;
+        }
+        if (hook.ruleIds && hook.ruleIds.length > 0) {
+          const matchedRules = (result.findings || []).map(f => f.ruleId);
+          if (!hook.ruleIds.some(r => matchedRules.includes(r))) continue;
+        }
+
+        // Fire webhook
+        const payload = {
+          event: 'scan.completed',
+          webhookId: hook.id,
+          scanId,
+          url,
+          domain: domain || null,
+          riskLevel: result.riskLevel,
+          riskScore: result.riskScore,
+          findings: result.summary?.total || 0,
+          critical: result.summary?.critical || 0,
+          verdict: result.verdict,
+          reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
+          timestamp: new Date().toISOString(),
+        };
+        fireCallback(hook.url, payload);
+      }
+    }
+  } catch (e) {
+    // Webhook dispatch is best-effort, never block the scan
+  }
 }
 
 // --- Badge System ---
@@ -569,6 +623,11 @@ app.get('/', (req, res) => {
         'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
         'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
+        'POST /webhooks': 'Register webhook subscription — receive scan events matching your filters (API key required)',
+        'GET /webhooks': 'List your registered webhooks (API key required)',
+        'PUT /webhooks/:id': 'Update webhook filters or toggle active (API key required)',
+        'DELETE /webhooks/:id': 'Remove a webhook (API key required)',
+        'POST /webhooks/:id/test': 'Send a test event to verify your webhook endpoint (API key required)',
         'GET /certificate/:id': 'Signed audit certificate — cryptographic proof a skill was scanned',
         'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
         'GET /scan/:id/sarif': 'SARIF v2.1.0 output — industry-standard format for GitHub Code Scanning, VS Code, Azure DevOps',
@@ -2807,6 +2866,145 @@ app.get('/watchlist/alerts', async (req, res) => {
   res.json({ count: allAlerts.length, items: allAlerts });
 });
 
+// --- Webhook Event Subscriptions ---
+// POST /webhooks — register a webhook to receive scan events matching your filters
+app.post('/webhooks', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
+  }
+
+  const { url, minSeverity, domains, ruleIds, label } = req.body;
+  if (!url) return res.status(400).json({ error: 'url is required (the webhook endpoint to receive events)' });
+
+  // Validate URL
+  try { new URL(url); } catch { return res.status(400).json({ error: 'Invalid webhook URL' }); }
+
+  // Validate minSeverity if provided
+  const validSeverities = ['clean', 'low', 'moderate', 'high', 'critical'];
+  if (minSeverity && !validSeverities.includes(minSeverity)) {
+    return res.status(400).json({ error: `Invalid minSeverity. Must be one of: ${validSeverities.join(', ')}` });
+  }
+
+  // Check limit (max 10 per key)
+  const existing = await db.getWebhooks(apiKey);
+  if (existing.length >= 10) {
+    return res.status(400).json({ error: 'Maximum 10 webhooks per API key. Remove some first.' });
+  }
+
+  const id = crypto.randomBytes(6).toString('hex');
+  const webhook = {
+    id,
+    url,
+    label: label || null,
+    minSeverity: minSeverity || null,
+    domains: Array.isArray(domains) ? domains.slice(0, 20) : null,
+    ruleIds: Array.isArray(ruleIds) ? ruleIds.slice(0, 50) : null,
+    active: true,
+    createdAt: new Date().toISOString(),
+    firedCount: 0,
+  };
+
+  await db.addWebhook(apiKey, webhook);
+
+  res.json({
+    success: true,
+    message: 'Webhook registered. You will receive POST events matching your filters.',
+    webhook,
+    filters: {
+      minSeverity: webhook.minSeverity || 'all scans',
+      domains: webhook.domains || 'all domains',
+      ruleIds: webhook.ruleIds || 'all rules',
+    },
+    eventFormat: {
+      event: 'scan.completed',
+      webhookId: id,
+      scanId: 'string',
+      url: 'scanned URL',
+      riskLevel: 'clean|low|moderate|high|critical',
+      riskScore: 'number',
+      findings: 'count',
+      critical: 'count',
+      verdict: 'string',
+      reportUrl: 'https://skillaudit.vercel.app/report/:id',
+      timestamp: 'ISO-8601',
+    },
+  });
+});
+
+// GET /webhooks — list your registered webhooks
+app.get('/webhooks', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const hooks = await db.getWebhooks(apiKey);
+  res.json({ count: hooks.length, webhooks: hooks });
+});
+
+// DELETE /webhooks/:id — remove a webhook
+app.delete('/webhooks/:id', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const hook = await db.getWebhook(apiKey, req.params.id);
+  if (!hook) return res.status(404).json({ error: 'Webhook not found' });
+  await db.removeWebhook(apiKey, req.params.id);
+  res.json({ success: true, message: 'Webhook removed', removed: hook });
+});
+
+// PUT /webhooks/:id — update a webhook (toggle active, change filters)
+app.put('/webhooks/:id', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const hook = await db.getWebhook(apiKey, req.params.id);
+  if (!hook) return res.status(404).json({ error: 'Webhook not found' });
+
+  const { url, minSeverity, domains, ruleIds, label, active } = req.body;
+  if (url !== undefined) { try { new URL(url); hook.url = url; } catch { return res.status(400).json({ error: 'Invalid URL' }); } }
+  if (minSeverity !== undefined) hook.minSeverity = minSeverity || null;
+  if (domains !== undefined) hook.domains = Array.isArray(domains) ? domains.slice(0, 20) : null;
+  if (ruleIds !== undefined) hook.ruleIds = Array.isArray(ruleIds) ? ruleIds.slice(0, 50) : null;
+  if (label !== undefined) hook.label = label;
+  if (active !== undefined) hook.active = !!active;
+  hook.updatedAt = new Date().toISOString();
+
+  await db.addWebhook(apiKey, hook);
+  res.json({ success: true, webhook: hook });
+});
+
+// POST /webhooks/:id/test — send a test event to verify your webhook endpoint
+app.post('/webhooks/:id/test', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const hook = await db.getWebhook(apiKey, req.params.id);
+  if (!hook) return res.status(404).json({ error: 'Webhook not found' });
+
+  const testPayload = {
+    event: 'webhook.test',
+    webhookId: hook.id,
+    scanId: 'test-000000000000',
+    url: 'https://example.com/test-skill.md',
+    domain: 'example.com',
+    riskLevel: 'moderate',
+    riskScore: 15,
+    findings: 3,
+    critical: 0,
+    verdict: '🔶 Moderate risk. Manual review required before installing.',
+    reportUrl: 'https://skillaudit.vercel.app/report/test',
+    timestamp: new Date().toISOString(),
+    _test: true,
+  };
+
+  fireCallback(hook.url, testPayload);
+  res.json({ success: true, message: 'Test event sent to ' + hook.url, payload: testPayload });
+});
+
 // --- Scan Certificates (Signed Proof of Audit) ---
 const CERT_SECRET = process.env.SKILLAUDIT_CERT_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -2960,6 +3158,9 @@ app.get('/openapi.json', (req, res) => {
       '/watchlist/check': { post: { summary: 'Re-scan watched URLs and detect risk changes', description: 'Re-scans all watched URLs (or one by id). Returns which URLs changed risk level and fires webhooks for changes.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string', description: 'Optional: check only one watchlist item' } } } } } }, responses: { '200': { description: 'Check results with risk change detection' } } } },
       '/watchlist/{id}': { delete: { summary: 'Remove URL from watchlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
+      '/webhooks': { post: { summary: 'Register webhook subscription for scan events', description: 'Subscribe to scan events matching your filters. SkillAudit will POST to your URL whenever a scan completes that matches your criteria. Filter by minimum severity, specific domains, or specific rule IDs. Max 10 webhooks per API key.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', description: 'Webhook endpoint URL' }, label: { type: 'string' }, minSeverity: { type: 'string', enum: ['clean', 'low', 'moderate', 'high', 'critical'] }, domains: { type: 'array', items: { type: 'string' }, description: 'Filter by domains (max 20)' }, ruleIds: { type: 'array', items: { type: 'string' }, description: 'Filter by rule IDs (max 50)' } } } } } }, responses: { '200': { description: 'Webhook registered' }, '401': { description: 'API key required' } } }, get: { summary: 'List your registered webhooks', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Webhook list' } } } },
+      '/webhooks/{id}': { put: { summary: 'Update webhook filters or toggle active', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } }, delete: { summary: 'Remove a webhook', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
+      '/webhooks/{id}/test': { post: { summary: 'Send a test event to your webhook endpoint', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Test event sent' } } } },
       '/certificate/{id}': { get: { summary: 'Get signed audit certificate for a scan', description: 'Returns a cryptographically signed certificate proving a skill was audited by SkillAudit. Includes content hash, risk level, findings count, expiry date, and a compact token for embedding. Certificates expire after 30 days.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }], responses: { '200': { description: 'Signed certificate with verification URL and embed markdown' }, '404': { description: 'Scan not found' } } } },
       '/certificate/verify': { get: { summary: 'Verify an audit certificate token', description: 'Verifies the cryptographic signature on a SkillAudit certificate. Returns valid/invalid status. Browsers get an HTML verification page; APIs get JSON. Use this to programmatically verify that a skill was audited.', parameters: [{ name: 'token', in: 'query', required: true, schema: { type: 'string' }, description: 'Base64url-encoded certificate token from /certificate/:id' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json'] }, description: 'Force JSON response' }], responses: { '200': { description: 'Verification result: {valid: true/false, certificate: {...}}' } } } },
       '/registry/challenge': { post: { summary: 'Get a registration challenge (Reverse CAPTCHA)', description: 'Returns a 3-step programmatic challenge: SHA-256 hash, JSON parsing, agent.json formatting. Expires in 30 seconds. Designed to be trivial for agents, tedious for humans.', responses: { '200': { description: 'Challenge object with steps and expiry' } } } },

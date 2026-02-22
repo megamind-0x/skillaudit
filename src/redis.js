@@ -357,4 +357,41 @@ module.exports = {
   addWatchlistItem, getWatchlist, getWatchlistItem, updateWatchlistItem, removeWatchlistItem, getWatchlistCount,
   trackUrlScan, getUrlHistory, getLastUrlScan,
   storeContentHash, getByContentHash, getUniqueHashCount,
+  addWebhook, getWebhooks, getWebhook, removeWebhook, getAllWebhookKeys,
 };
+
+// --- Webhook Subscriptions ---
+
+async function addWebhook(apiKey, webhook) {
+  const key = `webhooks:${apiKey}`;
+  await redis('HSET', key, webhook.id, JSON.stringify(webhook));
+}
+
+async function getWebhooks(apiKey) {
+  const key = `webhooks:${apiKey}`;
+  const val = await redis('HGETALL', key);
+  if (!val || !Array.isArray(val) || val.length === 0) return [];
+  const items = [];
+  for (let i = 0; i < val.length; i += 2) {
+    try { items.push(JSON.parse(val[i + 1])); } catch {}
+  }
+  return items;
+}
+
+async function getWebhook(apiKey, id) {
+  const key = `webhooks:${apiKey}`;
+  const val = await redis('HGET', key, id);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function removeWebhook(apiKey, id) {
+  const key = `webhooks:${apiKey}`;
+  return redis('HDEL', key, id);
+}
+
+async function getAllWebhookKeys() {
+  // Get all API keys that have webhooks registered
+  const keys = await redis('KEYS', 'webhooks:*');
+  return keys || [];
+}

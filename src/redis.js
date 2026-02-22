@@ -278,6 +278,35 @@ async function getWatchlistCount() {
   return parseInt(val) || 0;
 }
 
+// --- Content Hash Index ---
+// Maps SHA-256 content hashes to scan IDs for instant lookup (VirusTotal model)
+
+async function storeContentHash(contentHash, scanId, riskLevel, riskScore) {
+  if (!contentHash) return;
+  const payload = JSON.stringify({
+    scanId,
+    riskLevel,
+    riskScore,
+    scannedAt: new Date().toISOString(),
+  });
+  // Store with 30-day TTL (matches scan result TTL)
+  await redis('SET', `hash:${contentHash}`, payload, 'EX', 2592000);
+  // Track total unique hashes scanned
+  await redis('PFADD', 'stats:uniqueHashes', contentHash);
+}
+
+async function getByContentHash(contentHash) {
+  if (!contentHash) return null;
+  const val = await redis('GET', `hash:${contentHash}`);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function getUniqueHashCount() {
+  const val = await redis('PFCOUNT', 'stats:uniqueHashes');
+  return parseInt(val) || 0;
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
@@ -288,4 +317,5 @@ module.exports = {
   trackFlaggedDomain, getRecentFlaggedDomains,
   incrRuleHit, getRuleHits, getDailyRuleHits,
   addWatchlistItem, getWatchlist, getWatchlistItem, updateWatchlistItem, removeWatchlistItem, getWatchlistCount,
+  storeContentHash, getByContentHash, getUniqueHashCount,
 };

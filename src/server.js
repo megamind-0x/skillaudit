@@ -189,6 +189,10 @@ function recordScan(url, result) {
   db.incrRisk(result.riskLevel || 'unknown');
   db.storeScanResult({ url, ...result });
   db.storeScanById(id, { ...result, id, url });
+  // Index by content hash for instant lookups (VirusTotal model)
+  if (result.contentHash) {
+    db.storeContentHash(result.contentHash, id, result.riskLevel, result.riskScore);
+  }
   if (result.threatChains) {
     result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
@@ -522,6 +526,8 @@ app.get('/', (req, res) => {
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'POST /scan/manifest': 'MCP manifest scanner — scan tool descriptions and schemas for poisoning attacks',
         'GET /scan/agent-card?url=': 'A2A Agent Card scanner — fetch and security-scan an agent.json for manipulation',
+        'GET /scan/hash/:hash': 'Content hash lookup — check if content was already scanned by SHA-256 hash (VirusTotal model)',
+        'POST /scan/lookup': 'Smart scan — hash content first, return cached result or scan fresh (deduplication)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -1567,6 +1573,121 @@ app.get('/scan/agent-card', scanLimiter, async (req, res) => {
       hint: domain ? `Make sure ${domain} serves agent.json at /.well-known/agent.json` : 'Check the URL is accessible',
     });
   }
+});
+
+// --- Content Hash Lookup (VirusTotal model) ---
+// GET /scan/hash/:hash — instant lookup by SHA-256 content hash
+// Agents can hash content locally and check if it's been scanned before
+app.get('/scan/hash/:hash', async (req, res) => {
+  const hash = req.params.hash.toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) {
+    return res.status(400).json({
+      error: 'Invalid hash format. Must be a 64-character SHA-256 hex string.',
+      example: '/scan/hash/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    });
+  }
+
+  const cached = await db.getByContentHash(hash);
+  if (!cached) {
+    return res.status(404).json({
+      found: false,
+      hash,
+      message: 'No scan found for this content hash. Submit content via POST /scan/content to scan it.',
+    });
+  }
+
+  // Fetch the full scan result
+  const fullResult = await getScanResult(cached.scanId);
+
+  res.json({
+    found: true,
+    hash,
+    scanId: cached.scanId,
+    riskLevel: cached.riskLevel,
+    riskScore: cached.riskScore,
+    scannedAt: cached.scannedAt,
+    reportUrl: `https://skillaudit.vercel.app/report/${cached.scanId}`,
+    // Include full result if available, otherwise just the summary
+    result: fullResult ? {
+      riskLevel: fullResult.riskLevel,
+      riskScore: fullResult.riskScore,
+      summary: fullResult.summary,
+      verdict: fullResult.verdict,
+      source: fullResult.source,
+      version: fullResult.version,
+      findings: fullResult.findings,
+    } : null,
+  });
+});
+
+// POST /scan/lookup — smart scan: hash content first, return cached result or scan fresh
+// The efficient way to scan — avoids redundant processing for identical content
+app.post('/scan/lookup', scanLimiter, async (req, res) => {
+  const { content, url, source, force } = req.body;
+
+  if (!content && !url) {
+    return res.status(400).json({
+      error: 'Either content or url is required',
+      example: { content: '# My Skill\n...', source: 'my-skill.md' },
+      hint: 'POST content to check if it has been scanned before. Use force:true to rescan regardless.',
+    });
+  }
+
+  let textContent = content;
+  let sourceLabel = source || 'direct-input';
+
+  // If URL provided, fetch it first
+  if (url && !content) {
+    try {
+      textContent = await fetchUrl(url);
+      sourceLabel = url;
+    } catch (err) {
+      return res.status(400).json({ error: `Failed to fetch: ${err.message}` });
+    }
+  }
+
+  // Hash the content
+  const contentHash = crypto.createHash('sha256').update(textContent).digest('hex');
+
+  // Check cache unless force rescan
+  if (!force) {
+    const cached = await db.getByContentHash(contentHash);
+    if (cached) {
+      const fullResult = await getScanResult(cached.scanId);
+      return res.json({
+        cached: true,
+        contentHash,
+        scanId: cached.scanId,
+        riskLevel: cached.riskLevel,
+        riskScore: cached.riskScore,
+        scannedAt: cached.scannedAt,
+        reportUrl: `https://skillaudit.vercel.app/report/${cached.scanId}`,
+        result: fullResult ? {
+          riskLevel: fullResult.riskLevel,
+          riskScore: fullResult.riskScore,
+          summary: fullResult.summary,
+          verdict: fullResult.verdict,
+          findings: fullResult.findings,
+        } : undefined,
+        message: 'Content previously scanned. Use force:true to rescan.',
+      });
+    }
+  }
+
+  // No cache hit (or force) — scan fresh
+  const result = scanContent(textContent, sourceLabel);
+  const id = recordScan(sourceLabel, result);
+  result.id = id;
+  result.shareUrl = `/scan/${id}`;
+  result.reportUrl = `/report/${id}`;
+
+  res.json({
+    cached: false,
+    contentHash,
+    scanId: id,
+    ...result,
+    reportUrl: `https://skillaudit.vercel.app/report/${id}`,
+  });
 });
 
 // --- PyPI Package Scanner ---
@@ -2643,6 +2764,8 @@ app.get('/openapi.json', (req, res) => {
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
+      '/scan/hash/{hash}': { get: { summary: 'Look up scan result by content SHA-256 hash', description: 'The VirusTotal model for SkillAudit. Hash your content locally with SHA-256, then check if it has been scanned before. Returns the cached scan result instantly — no re-scanning needed. Enables offline-first workflows: hash locally, lookup remotely.', parameters: [{ name: 'hash', in: 'path', required: true, schema: { type: 'string', pattern: '^[a-f0-9]{64}$' }, description: 'SHA-256 hex hash of the content to look up' }], responses: { '200': { description: 'Cached scan result found' }, '404': { description: 'No scan found for this hash' } } } },
+      '/scan/lookup': { post: { summary: 'Smart scan with content deduplication', description: 'The efficient way to scan. Hashes the content first and checks if an identical scan already exists. Returns the cached result instantly if found, or performs a fresh scan if not. Use force:true to bypass the cache.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { content: { type: 'string', description: 'Raw content to scan' }, url: { type: 'string', description: 'URL to fetch and scan (alternative to content)' }, source: { type: 'string', description: 'Source label for the scan' }, force: { type: 'boolean', default: false, description: 'Force rescan even if cached result exists' } } } } } }, responses: { '200': { description: 'Scan result (cached or fresh)' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
       '/scan/{id}/sarif': { get: { summary: 'Get scan result in SARIF v2.1.0 format', description: 'Returns the scan result in SARIF (Static Analysis Results Interchange Format) — the industry standard for security tools. Upload directly to GitHub Code Scanning, view in VS Code SARIF Viewer, or feed into any SARIF-compatible pipeline. Add ?suppressed=true to include findings that were suppressed as documentation context.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }, { name: 'suppressed', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'false' }, description: 'Include suppressed findings' }], responses: { '200': { description: 'SARIF v2.1.0 document', content: { 'application/sarif+json': {} } }, '404': { description: 'Scan not found' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },

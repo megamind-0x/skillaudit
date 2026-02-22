@@ -1,5 +1,22 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (1:00 AM) — Scan Summary Cards (Embeddable SVG)
+**What:** `GET /scan/:id/card.svg` — generates a visual SVG card for any scan result. Dark theme, risk-colored header, score, findings count, and top 3 findings. Embeddable anywhere images work.
+**Design:**
+- Header: "🛡️ SkillAudit" + color-coded risk badge (green/yellow/orange/red)
+- Stats row: risk score, total findings, critical/high/medium counts with colored dots
+- Top 3 findings: emoji severity indicators + finding names
+- Clean scans: green "CLEAN" badge + "✅ No issues detected"
+- Footer: version, scan date, skillaudit.vercel.app
+- 404: graceful placeholder SVG (no broken images)
+- ~2KB, cached 1 hour, proper `image/svg+xml` content type
+**Where it works:**
+- GitHub READMEs: `![Scan](https://skillaudit.vercel.app/scan/XXXX/card.svg)` — inline visual proof of security
+- Slack/Discord: auto-unfurls as an image when linked
+- Documentation: embed alongside skill installation instructions
+- Blog posts, tweets, presentations — anywhere you share scan results
+**Why:** Every scan result is now a shareable visual asset. When someone shares a SkillAudit card, it's a free impression — the brand, the risk level, and the URL are all visible. The badge API shows pass/fail; the card shows the FULL story. This turns security audit results into social proof that spreads.
+
 ## 2026-02-22 (10:00 PM) — Hex/Unicode/CharCode Escape Decoder
 **What:** Four new deobfuscation engines that decode hex escapes (`\x41\x42`), unicode escapes (`\u0041\u0042`), `String.fromCharCode(65,66)`, and array-based charcode patterns (`[65,66].map(c=>String.fromCharCode(c))`). All decoded content scanned against 12 shared threat categories.
 **Refactor:** Extracted `DECODED_THREATS` and `scanDecodedContent()` as shared infrastructure used by both the base64 decoder (7 PM) and this new escape decoder. Adding future decoders is now trivial — just decode and call `scanDecodedContent()`.

@@ -368,29 +368,46 @@ function analyzeIntent(lines, codeBlockMap) {
   return findings;
 }
 
+// --- Shared threat patterns for decoded/deobfuscated content ---
+const DECODED_THREATS = [
+  { pattern: /https?:\/\/\S+/i, name: 'Hidden URL', severity: 'high' },
+  { pattern: /(?:curl|wget|fetch|axios|http\.request)\s/i, name: 'Hidden network call', severity: 'critical' },
+  { pattern: /(?:eval|exec|system|spawn|Function)\s*\(/i, name: 'Hidden code execution', severity: 'critical' },
+  { pattern: /(?:\.env|credentials|password|secret|token|api[_-]?key)/i, name: 'Hidden credential reference', severity: 'high' },
+  { pattern: /(?:\/bin\/(?:ba)?sh|cmd\.exe|powershell)/i, name: 'Hidden shell reference', severity: 'critical' },
+  { pattern: /(?:rm\s+-rf|del\s+\/[fqs]|format\s+c:)/i, name: 'Hidden destructive command', severity: 'critical' },
+  { pattern: /(?:webhook\.site|ngrok|requestbin|pipedream)/i, name: 'Hidden exfiltration domain', severity: 'critical' },
+  { pattern: /(?:ignore\s+previous|ignore\s+all|new\s+instructions)/i, name: 'Hidden prompt injection', severity: 'critical' },
+  { pattern: /(?:SELECT|INSERT|UPDATE|DELETE|DROP)\s+/i, name: 'Hidden SQL', severity: 'high' },
+  { pattern: /<script[\s>]/i, name: 'Hidden script tag', severity: 'high' },
+  { pattern: /(?:ssh|nc|ncat|socat)\s+/i, name: 'Hidden network tool', severity: 'high' },
+  { pattern: /(?:PRIVATE KEY|BEGIN RSA|BEGIN EC)/i, name: 'Hidden private key', severity: 'critical' },
+];
+
+function scanDecodedContent(decoded, encoding, lineIdx, lineContent, codeBlockMap, findings) {
+  for (const threat of DECODED_THREATS) {
+    const threatMatch = decoded.match(threat.pattern);
+    if (threatMatch) {
+      findings.push({
+        ruleId: `${encoding}_HIDDEN_` + threat.name.toUpperCase().replace(/[^A-Z]/g, '_'),
+        severity: threat.severity,
+        category: 'obfuscation',
+        name: `Obfuscated payload (${encoding.toLowerCase()}): ${threat.name}`,
+        description: `${encoding}-encoded content contains ${threat.name.toLowerCase()}. Decoded match: "${threatMatch[0].substring(0, 80)}"`,
+        line: lineIdx + 1,
+        lineContent: lineContent.trim().substring(0, 200),
+        match: `${encoding.toLowerCase()}→"${decoded.substring(0, 100).replace(/\n/g, '\\n')}"`,
+        context: codeBlockMap[lineIdx] ? `code:${encoding.toLowerCase()}-decoded` : `prose:${encoding.toLowerCase()}-decoded`,
+        suppressed: false,
+      });
+    }
+  }
+}
+
 // --- Base64 Payload Decoder ---
-// Finds base64 strings, decodes them, and scans decoded content for threats.
-// Catches obfuscated payloads that bypass plain-text pattern matching.
 function decodeAndScanBase64(content, lines, codeBlockMap) {
   const findings = [];
-  // Match base64 strings: min 40 chars (30 bytes encoded), only in non-doc context
   const b64Regex = /(?:['"`]|=\s*)([A-Za-z0-9+/]{40,}={0,2})(?:['"`]|$|\s)/g;
-
-  // Dangerous patterns to check in decoded content
-  const decodedThreats = [
-    { pattern: /https?:\/\/\S+/i, name: 'Hidden URL', severity: 'high', desc: 'Base64-encoded content contains a URL' },
-    { pattern: /(?:curl|wget|fetch|axios|http\.request)\s/i, name: 'Hidden network call', severity: 'critical', desc: 'Base64-encoded content contains network request commands' },
-    { pattern: /(?:eval|exec|system|spawn|Function)\s*\(/i, name: 'Hidden code execution', severity: 'critical', desc: 'Base64-encoded content contains code execution calls' },
-    { pattern: /(?:\.env|credentials|password|secret|token|api[_-]?key)/i, name: 'Hidden credential reference', severity: 'high', desc: 'Base64-encoded content references credentials or secrets' },
-    { pattern: /(?:\/bin\/(?:ba)?sh|cmd\.exe|powershell)/i, name: 'Hidden shell reference', severity: 'critical', desc: 'Base64-encoded content references a shell interpreter' },
-    { pattern: /(?:rm\s+-rf|del\s+\/[fqs]|format\s+c:)/i, name: 'Hidden destructive command', severity: 'critical', desc: 'Base64-encoded content contains destructive commands' },
-    { pattern: /(?:webhook\.site|ngrok|requestbin|pipedream)/i, name: 'Hidden exfiltration domain', severity: 'critical', desc: 'Base64-encoded content references known exfiltration endpoints' },
-    { pattern: /(?:ignore\s+previous|ignore\s+all|new\s+instructions)/i, name: 'Hidden prompt injection', severity: 'critical', desc: 'Base64-encoded content contains prompt injection attempt' },
-    { pattern: /(?:SELECT|INSERT|UPDATE|DELETE|DROP)\s+/i, name: 'Hidden SQL', severity: 'high', desc: 'Base64-encoded content contains SQL statements' },
-    { pattern: /<script[\s>]/i, name: 'Hidden script tag', severity: 'high', desc: 'Base64-encoded content contains HTML script tags' },
-    { pattern: /(?:ssh|nc|ncat|socat)\s+/i, name: 'Hidden network tool', severity: 'high', desc: 'Base64-encoded content references network tools' },
-    { pattern: /(?:PRIVATE KEY|BEGIN RSA|BEGIN EC)/i, name: 'Hidden private key', severity: 'critical', desc: 'Base64-encoded content contains private key material' },
-  ];
 
   for (let i = 0; i < lines.length; i++) {
     // For base64, only skip if line has explicit placeholder tokens
@@ -412,26 +429,80 @@ function decodeAndScanBase64(content, lines, codeBlockMap) {
         const printableRatio = decoded.replace(/[^\x20-\x7E\n\r\t]/g, '').length / decoded.length;
         if (printableRatio < 0.7) continue; // Likely binary data, not a text payload
 
-        // Scan decoded content against threat patterns
-        for (const threat of decodedThreats) {
-          const threatMatch = decoded.match(threat.pattern);
-          if (threatMatch) {
-            findings.push({
-              ruleId: 'BASE64_HIDDEN_' + threat.name.toUpperCase().replace(/[^A-Z]/g, '_'),
-              severity: threat.severity,
-              category: 'obfuscation',
-              name: `Obfuscated payload: ${threat.name}`,
-              description: `${threat.desc}. Decoded from base64 on line ${i + 1}. Decoded match: "${threatMatch[0].substring(0, 80)}"`,
-              line: i + 1,
-              lineContent: lines[i].trim().substring(0, 200),
-              match: `base64→"${decoded.substring(0, 100).replace(/\n/g, '\\n')}"`,
-              context: codeBlockMap[i] ? 'code:base64-decoded' : 'prose:base64-decoded',
-              suppressed: false,
-            });
-          }
-        }
+        scanDecodedContent(decoded, 'BASE64', i, lines[i], codeBlockMap, findings);
       } catch {
         // Invalid base64, skip
+      }
+    }
+  }
+  return findings;
+}
+
+// --- Hex/Unicode/CharCode Escape Decoder ---
+// Decodes \x41\x42, \u0041, String.fromCharCode(65,66), and octal \101 sequences
+function decodeAndScanEscapes(content, lines, codeBlockMap) {
+  const findings = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (hasPlaceholder(lines[i])) continue;
+    const line = lines[i];
+
+    // 1. Hex escapes: \x41\x42\x43... (min 6 chars = 3 bytes)
+    const hexSeqs = line.match(/(?:\\x[0-9a-fA-F]{2}){3,}/g);
+    if (hexSeqs) {
+      for (const seq of hexSeqs) {
+        try {
+          const decoded = seq.replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+          const printable = decoded.replace(/[^\x20-\x7E]/g, '').length / decoded.length;
+          if (printable >= 0.7) {
+            scanDecodedContent(decoded, 'HEX', i, line, codeBlockMap, findings);
+          }
+        } catch {}
+      }
+    }
+
+    // 2. Unicode escapes: \u0041\u0042... (min 3 chars)
+    const uniSeqs = line.match(/(?:\\u[0-9a-fA-F]{4}){3,}/g);
+    if (uniSeqs) {
+      for (const seq of uniSeqs) {
+        try {
+          const decoded = seq.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+          const printable = decoded.replace(/[^\x20-\x7E]/g, '').length / decoded.length;
+          if (printable >= 0.7) {
+            scanDecodedContent(decoded, 'UNICODE', i, line, codeBlockMap, findings);
+          }
+        } catch {}
+      }
+    }
+
+    // 3. String.fromCharCode(65, 66, 67, ...) — min 3 numbers
+    const charCodeMatch = line.match(/String\.fromCharCode\s*\(\s*([\d,\s]+)\s*\)/gi);
+    if (charCodeMatch) {
+      for (const match of charCodeMatch) {
+        try {
+          const nums = match.match(/\d+/g);
+          if (nums && nums.length >= 3) {
+            const decoded = nums.map(n => String.fromCharCode(parseInt(n))).join('');
+            const printable = decoded.replace(/[^\x20-\x7E]/g, '').length / decoded.length;
+            if (printable >= 0.7) {
+              scanDecodedContent(decoded, 'CHARCODE', i, line, codeBlockMap, findings);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 4. Array of char codes: [99,117,114,108].map(c=>String.fromCharCode(c))
+    const arrayCharMatch = line.match(/\[\s*(\d+(?:\s*,\s*\d+){2,})\s*\][\s.]*(?:map|forEach|reduce)/gi);
+    if (arrayCharMatch) {
+      for (const match of arrayCharMatch) {
+        try {
+          const nums = match.match(/\d+/g);
+          if (nums && nums.length >= 3 && nums.every(n => parseInt(n) >= 32 && parseInt(n) <= 126)) {
+            const decoded = nums.map(n => String.fromCharCode(parseInt(n))).join('');
+            scanDecodedContent(decoded, 'CHARCODE_ARRAY', i, line, codeBlockMap, findings);
+          }
+        } catch {}
       }
     }
   }
@@ -494,6 +565,9 @@ function scanContent(content, sourceUrl = null) {
 
   // 5.6. Base64 payload decoder — find, decode, and scan hidden content
   findings.push(...decodeAndScanBase64(content, lines, codeBlockMap));
+
+  // 5.7. Hex/Unicode/CharCode escape decoder
+  findings.push(...decodeAndScanEscapes(content, lines, codeBlockMap));
 
   // 6. Capability analysis (v0.6.1)
   const capabilityAnalysis = analyzeCapabilities(content);

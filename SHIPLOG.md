@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (1:00 PM) — Bulk Hash Lookup (Check All My Skills At Once)
+**What:** `POST /scan/hash/bulk` — check up to 50 content hashes in a single call. The "inventory check" endpoint.
+**How it works:**
+- Agent hashes all installed skill files locally (SHA-256)
+- POSTs all hashes to `/scan/hash/bulk`
+- Gets instant results: which are known (with risk levels), which are unknown (need scanning)
+- Returns aggregate risk breakdown, worst risk level, and a separate `unknownHashes` array for easy follow-up
+- Validates hash format, reports invalid entries separately
+**Why:** This completes the VirusTotal model. Single hash lookup (7:00 AM) lets you check one file. Bulk lookup lets you check your entire skill inventory in one call. The workflow: (1) hash 20 installed skills locally, (2) one POST to `/scan/hash/bulk`, (3) get "18 known, 2 unknown — worst risk: moderate", (4) scan only the 2 unknown ones. This is how package managers check for known vulnerabilities — `npm audit` doesn't re-scan every dependency, it checks hashes against a database. SkillAudit now works the same way. Zero redundant scans, one network call for your entire inventory.
+
 ## 2026-02-22 (10:00 AM) — URL Scan History + Drift Detection
 **What:** Agents can now track how a URL's risk evolves over time and detect when a skill gets riskier — the key signal for supply chain attacks.
 **Endpoints:**

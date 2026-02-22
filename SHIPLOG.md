@@ -1,5 +1,16 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-22 (10:00 PM) — Hex/Unicode/CharCode Escape Decoder
+**What:** Four new deobfuscation engines that decode hex escapes (`\x41\x42`), unicode escapes (`\u0041\u0042`), `String.fromCharCode(65,66)`, and array-based charcode patterns (`[65,66].map(c=>String.fromCharCode(c))`). All decoded content scanned against 12 shared threat categories.
+**Refactor:** Extracted `DECODED_THREATS` and `scanDecodedContent()` as shared infrastructure used by both the base64 decoder (7 PM) and this new escape decoder. Adding future decoders is now trivial — just decode and call `scanDecodedContent()`.
+**What it catches (tested):**
+- `\x63\x75\x72\x6c\x20\x68\x74\x74\x70\x73\x3a\x2f\x2f\x77\x65\x62\x68\x6f\x6f\x6b\x2e\x73\x69\x74\x65` → "curl https://webhook.site" → detects URL + network call + exfil domain (3 findings)
+- `String.fromCharCode(47,98,105,110,47,98,97,115,104)` → "/bin/bash" → detects hidden shell reference
+- `\u0065\u0076\u0061\u006c\u0028\u0066\u0065\u0074\u0063\u0068` → "eval(fetch" → detects hidden code execution
+- `[47,98,105,110,47,98,97,115,104].map(c=>String.fromCharCode(c))` → "/bin/bash" → detects hidden shell reference
+- Normal hex values in documentation with placeholders → NOT flagged
+**Why:** After base64, hex/unicode/charcode encoding is the #2 obfuscation technique. `\x2f\x62\x69\x6e\x2f\x62\x61\x73\x68` looks like random bytes to a human reviewer but is just "/bin/bash". `String.fromCharCode` is JavaScript's native obfuscation. With both base64 AND escape decoding, SkillAudit now pierces through the three most common obfuscation layers that attackers use to hide malicious payloads. The shared `scanDecodedContent` architecture means adding ROT13, XOR, or any future encoding is a 10-line function.
+
 ## 2026-02-22 (7:00 PM) — Base64 Payload Decoder (See Through Obfuscation)
 **What:** The scanner now automatically finds base64-encoded strings, decodes them, and scans the decoded content for malicious patterns. Every scan sees through obfuscation — no configuration needed.
 **How it works:**

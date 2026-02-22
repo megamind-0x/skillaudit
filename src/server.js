@@ -555,6 +555,7 @@ app.get('/', (req, res) => {
         'GET /scan/history/url?url=': 'URL scan history — how has this URL risk changed over time? Trend analysis and drift detection',
         'GET /scan/hash/:hash': 'Content hash lookup — check if content was already scanned by SHA-256 hash (VirusTotal model)',
         'POST /scan/lookup': 'Smart scan — hash content first, return cached result or scan fresh (deduplication)',
+        'POST /scan/hash/bulk': 'Bulk hash lookup — check up to 50 content hashes in one call (the "check all my skills" endpoint)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -1778,6 +1779,83 @@ app.post('/scan/lookup', scanLimiter, async (req, res) => {
   });
 });
 
+// --- Bulk Hash Lookup ---
+// POST /scan/hash/bulk — check up to 50 content hashes in one call
+// The "check all my installed skills" endpoint
+app.post('/scan/hash/bulk', async (req, res) => {
+  const { hashes } = req.body;
+  if (!hashes || !Array.isArray(hashes) || hashes.length === 0) {
+    return res.status(400).json({
+      error: 'hashes array is required',
+      example: { hashes: ['e3b0c44298fc1c149afbf4c8996fb924...', 'a1b2c3...'] },
+      hint: 'SHA-256 hex hashes of skill content. Hash locally, check remotely.',
+    });
+  }
+  if (hashes.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 hashes per request' });
+  }
+
+  // Validate all hashes
+  const validHashes = [];
+  const invalid = [];
+  for (const h of hashes) {
+    const clean = String(h).toLowerCase().trim();
+    if (/^[a-f0-9]{64}$/.test(clean)) {
+      validHashes.push(clean);
+    } else {
+      invalid.push(h);
+    }
+  }
+
+  if (invalid.length > 0 && validHashes.length === 0) {
+    return res.status(400).json({ error: 'No valid SHA-256 hashes provided', invalid });
+  }
+
+  // Look up all hashes in parallel
+  const results = await Promise.all(validHashes.map(async (hash) => {
+    const cached = await db.getByContentHash(hash);
+    if (cached) {
+      return {
+        hash,
+        found: true,
+        scanId: cached.scanId,
+        riskLevel: cached.riskLevel,
+        riskScore: cached.riskScore,
+        scannedAt: cached.scannedAt,
+        reportUrl: `https://skillaudit.vercel.app/report/${cached.scanId}`,
+      };
+    }
+    return { hash, found: false };
+  }));
+
+  const found = results.filter(r => r.found);
+  const unknown = results.filter(r => !r.found);
+
+  // Risk summary of known hashes
+  const riskBreakdown = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+  found.forEach(r => { riskBreakdown[r.riskLevel] = (riskBreakdown[r.riskLevel] || 0) + 1; });
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const worstRisk = found.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  res.json({
+    total: validHashes.length,
+    found: found.length,
+    unknown: unknown.length,
+    invalid: invalid.length > 0 ? invalid : undefined,
+    worstRisk: found.length > 0 ? worstRisk : null,
+    riskBreakdown: found.length > 0 ? riskBreakdown : undefined,
+    verdict: unknown.length === 0 && found.length > 0
+      ? `✅ All ${found.length} hash(es) found in database.`
+      : unknown.length > 0
+        ? `⚠️ ${unknown.length} hash(es) not found — these need scanning. ${found.length} known.`
+        : 'No hashes found in database.',
+    results,
+    unknownHashes: unknown.length > 0 ? unknown.map(u => u.hash) : undefined,
+  });
+});
+
 // --- PyPI Package Scanner ---
 app.get('/scan/pypi', scanLimiter, async (req, res) => {
   const pkg = req.query.package;
@@ -2855,6 +2933,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/history/url': { get: { summary: 'URL scan history with drift detection and trend analysis', description: 'Returns the complete scan history for a URL — every past scan with risk level, score, and findings count. Includes trend analysis (worsening/improving/stable), peak risk, and score averages. Use to monitor how a skill evolves over time and detect supply chain attacks where a safe skill turns malicious after gaining trust.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL to check history for' }, { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 50 }, description: 'Max entries to return' }], responses: { '200': { description: 'Scan history with trend analysis' } } } },
       '/scan/hash/{hash}': { get: { summary: 'Look up scan result by content SHA-256 hash', description: 'The VirusTotal model for SkillAudit. Hash your content locally with SHA-256, then check if it has been scanned before. Returns the cached scan result instantly — no re-scanning needed. Enables offline-first workflows: hash locally, lookup remotely.', parameters: [{ name: 'hash', in: 'path', required: true, schema: { type: 'string', pattern: '^[a-f0-9]{64}$' }, description: 'SHA-256 hex hash of the content to look up' }], responses: { '200': { description: 'Cached scan result found' }, '404': { description: 'No scan found for this hash' } } } },
       '/scan/lookup': { post: { summary: 'Smart scan with content deduplication', description: 'The efficient way to scan. Hashes the content first and checks if an identical scan already exists. Returns the cached result instantly if found, or performs a fresh scan if not. Use force:true to bypass the cache.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { content: { type: 'string', description: 'Raw content to scan' }, url: { type: 'string', description: 'URL to fetch and scan (alternative to content)' }, source: { type: 'string', description: 'Source label for the scan' }, force: { type: 'boolean', default: false, description: 'Force rescan even if cached result exists' } } } } } }, responses: { '200': { description: 'Scan result (cached or fresh)' } } } },
+      '/scan/hash/bulk': { post: { summary: 'Bulk hash lookup — check up to 50 content hashes at once', description: 'The "check all my installed skills" endpoint. Hash your skill files locally with SHA-256, submit all hashes in one call, get instant results for known content and a list of unknown hashes that need scanning. Zero redundant scans.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['hashes'], properties: { hashes: { type: 'array', items: { type: 'string' }, description: 'SHA-256 hex hashes (max 50)' } } } } } }, responses: { '200': { description: 'Bulk lookup results with risk breakdown' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },
       '/scan/{id}/sarif': { get: { summary: 'Get scan result in SARIF v2.1.0 format', description: 'Returns the scan result in SARIF (Static Analysis Results Interchange Format) — the industry standard for security tools. Upload directly to GitHub Code Scanning, view in VS Code SARIF Viewer, or feed into any SARIF-compatible pipeline. Add ?suppressed=true to include findings that were suppressed as documentation context.', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Scan ID' }, { name: 'suppressed', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'false' }, description: 'Include suppressed findings' }], responses: { '200': { description: 'SARIF v2.1.0 document', content: { 'application/sarif+json': {} } }, '404': { description: 'Scan not found' } } } },
       '/report/{id}': { get: { summary: 'View scan report (HTML)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'HTML report' } } } },

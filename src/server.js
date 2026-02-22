@@ -193,6 +193,10 @@ function recordScan(url, result) {
   if (result.contentHash) {
     db.storeContentHash(result.contentHash, id, result.riskLevel, result.riskScore);
   }
+  // Track URL scan history for drift detection
+  if (url && url !== 'direct-input') {
+    db.trackUrlScan(url, id, result.riskLevel, result.riskScore, result.summary?.total || 0, result.summary?.critical || 0);
+  }
   if (result.threatChains) {
     result.threatChains.forEach(chain => db.incrThreatType(chain.name));
   }
@@ -305,11 +309,32 @@ app.get('/gate', scanLimiter, async (req, res) => {
     const decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
     const allow = decision !== 'deny';
 
-    // Get domain reputation if available
+    // Get domain reputation and previous scan for drift detection
     const domain = getDomain(url);
     let reputation = null;
-    if (domain) {
-      try { reputation = await db.getDomainReputation(domain); } catch {}
+    let drift = null;
+    const [repResult, prevScan] = await Promise.all([
+      domain ? db.getDomainReputation(domain).catch(() => null) : null,
+      db.getLastUrlScan(url),
+    ]);
+    reputation = repResult;
+
+    // Compute drift from previous scan
+    if (prevScan) {
+      const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+      const prevIdx = riskOrder.indexOf(prevScan.riskLevel);
+      const currIdx = riskOrder.indexOf(result.riskLevel);
+      const scoreDelta = result.riskScore - prevScan.riskScore;
+      const findingsDelta = result.summary.total - (prevScan.findings || 0);
+      drift = {
+        direction: currIdx > prevIdx ? 'worsened' : currIdx < prevIdx ? 'improved' : scoreDelta !== 0 ? 'changed' : 'stable',
+        previousRisk: prevScan.riskLevel,
+        previousScore: prevScan.riskScore,
+        scoreDelta,
+        findingsDelta,
+        previousScanId: prevScan.scanId,
+        previousScanAt: prevScan.scannedAt,
+      };
     }
 
     res.json({
@@ -324,6 +349,7 @@ app.get('/gate', scanLimiter, async (req, res) => {
       domain: domain || null,
       domainReputation: reputation ? reputation.reputation : 'unknown',
       domainScore: reputation ? reputation.reputationScore : null,
+      drift: drift || undefined,
       scanId: id,
       reportUrl: `https://skillaudit.vercel.app/report/${id}`,
       threshold,
@@ -526,6 +552,7 @@ app.get('/', (req, res) => {
         'GET /scan/repo?repo=owner/name': 'Auto-discover and scan all skill files in a GitHub repo',
         'POST /scan/manifest': 'MCP manifest scanner — scan tool descriptions and schemas for poisoning attacks',
         'GET /scan/agent-card?url=': 'A2A Agent Card scanner — fetch and security-scan an agent.json for manipulation',
+        'GET /scan/history/url?url=': 'URL scan history — how has this URL risk changed over time? Trend analysis and drift detection',
         'GET /scan/hash/:hash': 'Content hash lookup — check if content was already scanned by SHA-256 hash (VirusTotal model)',
         'POST /scan/lookup': 'Smart scan — hash content first, return cached result or scan fresh (deduplication)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
@@ -1573,6 +1600,67 @@ app.get('/scan/agent-card', scanLimiter, async (req, res) => {
       hint: domain ? `Make sure ${domain} serves agent.json at /.well-known/agent.json` : 'Check the URL is accessible',
     });
   }
+});
+
+// --- URL Scan History & Drift Detection ---
+// GET /scan/history/url — how has this URL's risk changed over time?
+app.get('/scan/history/url', async (req, res) => {
+  const url = req.query.url;
+  if (!url) {
+    return res.status(400).json({
+      error: 'url query parameter is required',
+      example: '/scan/history/url?url=https://example.com/SKILL.md',
+    });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  const history = await db.getUrlHistory(url, limit);
+
+  if (history.length === 0) {
+    return res.json({
+      url,
+      scans: 0,
+      message: 'No scan history for this URL. Scan it first via /gate or /scan/quick.',
+      history: [],
+    });
+  }
+
+  // Compute trend analysis
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const latest = history[0];
+  const oldest = history[history.length - 1];
+  const latestIdx = riskOrder.indexOf(latest.riskLevel);
+  const oldestIdx = riskOrder.indexOf(oldest.riskLevel);
+
+  // Find peak risk
+  let peakRisk = 'clean';
+  let peakScore = 0;
+  for (const h of history) {
+    if (riskOrder.indexOf(h.riskLevel) > riskOrder.indexOf(peakRisk)) peakRisk = h.riskLevel;
+    if (h.riskScore > peakScore) peakScore = h.riskScore;
+  }
+
+  // Score trend (average of first half vs second half)
+  const mid = Math.floor(history.length / 2);
+  const recentAvg = history.slice(0, mid || 1).reduce((s, h) => s + h.riskScore, 0) / (mid || 1);
+  const olderAvg = history.slice(mid).reduce((s, h) => s + h.riskScore, 0) / (history.length - mid);
+  const trend = recentAvg > olderAvg + 2 ? 'worsening' : recentAvg < olderAvg - 2 ? 'improving' : 'stable';
+
+  res.json({
+    url,
+    scans: history.length,
+    currentRisk: latest.riskLevel,
+    currentScore: latest.riskScore,
+    peakRisk,
+    peakScore,
+    trend,
+    scoreTrend: { recent: Math.round(recentAvg * 10) / 10, older: Math.round(olderAvg * 10) / 10 },
+    firstSeen: oldest.scannedAt,
+    lastSeen: latest.scannedAt,
+    latestScanId: latest.scanId,
+    latestReportUrl: `https://skillaudit.vercel.app/report/${latest.scanId}`,
+    history,
+  });
 });
 
 // --- Content Hash Lookup (VirusTotal model) ---
@@ -2764,6 +2852,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
+      '/scan/history/url': { get: { summary: 'URL scan history with drift detection and trend analysis', description: 'Returns the complete scan history for a URL — every past scan with risk level, score, and findings count. Includes trend analysis (worsening/improving/stable), peak risk, and score averages. Use to monitor how a skill evolves over time and detect supply chain attacks where a safe skill turns malicious after gaining trust.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL to check history for' }, { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 50 }, description: 'Max entries to return' }], responses: { '200': { description: 'Scan history with trend analysis' } } } },
       '/scan/hash/{hash}': { get: { summary: 'Look up scan result by content SHA-256 hash', description: 'The VirusTotal model for SkillAudit. Hash your content locally with SHA-256, then check if it has been scanned before. Returns the cached scan result instantly — no re-scanning needed. Enables offline-first workflows: hash locally, lookup remotely.', parameters: [{ name: 'hash', in: 'path', required: true, schema: { type: 'string', pattern: '^[a-f0-9]{64}$' }, description: 'SHA-256 hex hash of the content to look up' }], responses: { '200': { description: 'Cached scan result found' }, '404': { description: 'No scan found for this hash' } } } },
       '/scan/lookup': { post: { summary: 'Smart scan with content deduplication', description: 'The efficient way to scan. Hashes the content first and checks if an identical scan already exists. Returns the cached result instantly if found, or performs a fresh scan if not. Use force:true to bypass the cache.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { content: { type: 'string', description: 'Raw content to scan' }, url: { type: 'string', description: 'URL to fetch and scan (alternative to content)' }, source: { type: 'string', description: 'Source label for the scan' }, force: { type: 'boolean', default: false, description: 'Force rescan even if cached result exists' } } } } } }, responses: { '200': { description: 'Scan result (cached or fresh)' } } } },
       '/scan/{id}': { get: { summary: 'Get scan result (JSON)', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Scan result' } } } },

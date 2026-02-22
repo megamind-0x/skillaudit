@@ -278,6 +278,44 @@ async function getWatchlistCount() {
   return parseInt(val) || 0;
 }
 
+// --- URL Scan History (drift detection) ---
+// Tracks scan history per URL for trend analysis and drift detection
+
+async function trackUrlScan(url, scanId, riskLevel, riskScore, findingsCount, criticalCount) {
+  if (!url) return;
+  const key = `url-history:${Buffer.from(url).toString('base64url').slice(0, 128)}`;
+  const entry = JSON.stringify({
+    scanId,
+    riskLevel,
+    riskScore,
+    findings: findingsCount,
+    critical: criticalCount,
+    scannedAt: new Date().toISOString(),
+  });
+  // Store in sorted set by timestamp (score = Date.now())
+  await redis('ZADD', key, Date.now(), entry);
+  // Keep last 50 scans per URL
+  const count = await redis('ZCARD', key);
+  if (count && count > 50) {
+    await redis('ZREMRANGEBYRANK', key, 0, count - 51);
+  }
+  // 90-day TTL on the whole key
+  await redis('EXPIRE', key, 7776000);
+}
+
+async function getUrlHistory(url, limit = 20) {
+  if (!url) return [];
+  const key = `url-history:${Buffer.from(url).toString('base64url').slice(0, 128)}`;
+  const val = await redis('ZREVRANGE', key, 0, limit - 1);
+  if (!val) return [];
+  return val.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+}
+
+async function getLastUrlScan(url) {
+  const history = await getUrlHistory(url, 1);
+  return history.length > 0 ? history[0] : null;
+}
+
 // --- Content Hash Index ---
 // Maps SHA-256 content hashes to scan IDs for instant lookup (VirusTotal model)
 
@@ -317,5 +355,6 @@ module.exports = {
   trackFlaggedDomain, getRecentFlaggedDomains,
   incrRuleHit, getRuleHits, getDailyRuleHits,
   addWatchlistItem, getWatchlist, getWatchlistItem, updateWatchlistItem, removeWatchlistItem, getWatchlistCount,
+  trackUrlScan, getUrlHistory, getLastUrlScan,
   storeContentHash, getByContentHash, getUniqueHashCount,
 };

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run scanner tests
+        run: npm test
+
+      - name: Verify server starts
+        run: |
+          PORT=4000 timeout 5 node src/server.js &
+          sleep 3
+          curl -sf http://localhost:4000/health | grep -q '"ok"'
+          echo "✅ Server health check passed"
+          kill %1 2>/dev/null || true
+
+      - name: Verify gate endpoint
+        run: |
+          PORT=4001 timeout 10 node src/server.js &
+          sleep 3
+          RESULT=$(curl -sf "http://localhost:4001/gate?url=https://raw.githubusercontent.com/anthropics/anthropic-cookbook/main/README.md")
+          echo "$RESULT" | grep -q '"allow"'
+          echo "✅ Gate endpoint working"
+          kill %1 2>/dev/null || true
+
+      - name: Verify scan endpoint
+        run: |
+          PORT=4002 timeout 10 node src/server.js &
+          sleep 3
+          RESULT=$(curl -sf -X POST http://localhost:4002/scan/content \
+            -H 'Content-Type: application/json' \
+            -d '{"content":"# Safe skill\nThis does math."}')
+          echo "$RESULT" | grep -q '"riskLevel"'
+          echo "✅ Scan endpoint working"
+          kill %1 2>/dev/null || true
+
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate JSON files
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('rules/patterns.json','utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+          echo "✅ JSON files valid"
+
+      - name: Check rule count
+        run: |
+          COUNT=$(node -e "const d=JSON.parse(require('fs').readFileSync('rules/patterns.json','utf8')); console.log(d.rules.length)")
+          PATTERNS=$(node -e "const d=JSON.parse(require('fs').readFileSync('rules/patterns.json','utf8')); console.log(d.rules.reduce((s,r)=>s+r.patterns.length,0))")
+          echo "Rules: $COUNT, Patterns: $PATTERNS"
+          if [ "$COUNT" -lt 30 ]; then echo "❌ Rule count dropped below 30!" && exit 1; fi
+          echo "✅ Rule count healthy"
+
+      - name: Verify all modules load
+        run: |
+          npm ci
+          node -e "require('./src/scanner'); require('./src/redis'); require('./src/secrets'); require('./src/capabilities'); require('./src/sarif'); require('./src/trust'); console.log('✅ All modules load')"

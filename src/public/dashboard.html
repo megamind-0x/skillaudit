@@ -139,7 +139,7 @@ async function loadDashboard() {
 
     const rd = stats.riskDistribution || {};
     const total = Object.values(rd).reduce((a,b) => a+b, 0) || 1;
-    const threats = feed.recentThreats || [];
+    const threats = Array.isArray(feed.recentThreats) ? feed.recentThreats : feed.recentThreats?.items || [];
     const flagged = (domains.items || domains.domains || []).slice(0, 10);
     const topRules = (Array.isArray(rules.allTime) ? rules.allTime : rules.allTime?.items || []).slice(0, 10);
     const todayRules = (Array.isArray(rules.today) ? rules.today : rules.today?.items || []).slice(0, 5);

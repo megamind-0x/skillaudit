@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (10:00 PM) — Comprehensive Test Suite (75 tests, 100% rule coverage)
+**What:** Full automated test suite covering every detection rule, every deobfuscation engine, false positive suppression, structural analysis, secret detection, and edge cases. Run with `npm test`.
+**Coverage:**
+- All 37 detection rules tested with realistic payloads
+- Both deobfuscation engines (base64, hex/unicode/charcode) tested for detection AND false positive suppression
+- URL reputation, invisible Unicode, intent analysis, structural patterns
+- Secret detection (AWS, GitHub PAT)
+- 8 false positive suppression tests (doc context, markdown tables, placeholders, code examples)
+- Edge cases: empty content, 100KB lines, binary data, deduplication, content hash, version
+- All 75 tests pass in <1 second
+**Why:** SkillAudit has 37 rules with 333 patterns, 2 deobfuscation engines, structural analysis, intent analysis, capability analysis, and secret detection. That's a LOT of moving parts. Without tests, any change risks breaking existing detections. This test suite is the safety net — it proves every rule works, every decoder works, and false positives stay suppressed. For infrastructure, reliability isn't optional. `npm test` now runs in CI, in development, before every deploy. If a rule regresses, tests catch it before it ships.
+
 ## 2026-02-23 (7:00 PM) — Python SDK (pip install skillaudit)
 **What:** Zero-dependency Python SDK for SkillAudit. Built, tested against live production, ready for PyPI.
 **API surface:**

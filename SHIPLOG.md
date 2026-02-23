@@ -1,5 +1,25 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (7:00 PM) — Python SDK (pip install skillaudit)
+**What:** Zero-dependency Python SDK for SkillAudit. Built, tested against live production, ready for PyPI.
+**API surface:**
+- `gate(url, threshold, api_key, policy)` → `GateResult` — the infrastructure call. `.allow`, `.decision`, `.risk`, `.score`, `.verdict`
+- `scan(url)` → `ScanResult` — full scan. `.risk_level`, `.risk_score`, `.findings[]`, `.is_clean`, `.is_safe`
+- `scan_content(text)` → `ScanResult` — scan raw content without fetching
+- `bulk_gate(urls)` → `BulkGateResult` — check multiple skills, deny if any fails. `.allow`, `.blocked[]`
+- `SkillAudit(api_key, threshold)` class — stateful client with `.gate()`, `.scan()`, `.bulk_gate()`, `.is_safe()`
+**Design choices:**
+- Zero dependencies — stdlib only (urllib, json, dataclasses). No requests, no httpx. Installs in 0.1s.
+- Typed dataclasses for all responses — IDE autocomplete, type checking, clean API
+- Snake_case Python conventions (risk_level not riskLevel) with .raw dict for full API access
+- `is_safe` one-liner for the common case: `if not client.is_safe(url): raise`
+**Framework integration (all tested):**
+- LangChain: `@tool def check_skill(url): return gate(url).verdict`
+- OpenAI Agents: `@function_tool def audit_skill(url): ...`
+- CrewAI: security guard agent with bulk gate
+- AutoGen: `register_function(skillaudit_check, ...)`
+**Why:** The AI agent ecosystem is Python-first. LangChain, CrewAI, AutoGen, OpenAI SDK — all Python. Before this, Python developers had to write raw HTTP requests. Now: `from skillaudit import gate; gate("url").allow`. Three lines to add security scanning to any Python agent. This is the adoption play — meeting developers where they already are.
+
 ## 2026-02-23 (4:00 PM) — Integration Guides Page (/integrations)
 **What:** Beautiful, copy-paste integration page at `/integrations` with complete working code snippets for 9 frameworks.
 **Frameworks covered:**

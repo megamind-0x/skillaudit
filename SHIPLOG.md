@@ -1,5 +1,27 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (1:00 PM) — Security Policy Engine + Allowlist/Denylist
+**What:** Two features shipped together — both are enterprise-critical for SkillAudit becoming infrastructure.
+
+**Allowlist/Denylist System:**
+- `POST/GET/DELETE /allowlist` and `/denylist` — manage trusted and blocked patterns (API key required)
+- Match by exact URL, domain (with subdomain matching), or SHA-256 content hash
+- Auto-detects matchType from pattern format (URLs start with `https://`, hashes are 64-char hex, everything else is domain)
+- Gate checks denylist first (instant DENY), then allowlist (instant ALLOW), then scans normally
+- Bulk gate also checks per-URL before scanning
+- 200 entries per list per API key, duplicate prevention
+
+**Security Policy Engine:**
+- `POST /policies` — create a named policy with custom rules
+- `GET /policies` — list your policies
+- `DELETE /policies/:id` — remove a policy
+- Policy rules: `maxRiskScore`, `maxFindings`, `blockRules` (specific rule IDs), `blockCategories`, `requireDomains`, `blockDomains`, `noCritical` (zero critical findings), `maxThreatChains`, `requireClean` (score must be 0)
+- Gate integration: `/gate?url=X&key=K&policy=POLICY_ID` — evaluates scan against policy
+- Policy violations override threshold-based decisions; response includes `policy.violations[]` with specifics
+- Example policy: `{"name": "production-strict", "maxRiskScore": 10, "noCritical": true, "blockRules": ["DATA_EXFIL", "REVERSE_SHELL"], "requireDomains": ["github.com"], "maxThreatChains": 0}`
+
+**Why:** These three features (allowlist, denylist, policies) transform SkillAudit from a stateless scanner into a stateful security platform. Before: every scan starts from zero, every decision is threshold-based. Now: teams define WHO to trust (allowlist), WHO to block (denylist), and WHAT rules to enforce (policies). A team can say "only allow skills from github.com and npmjs.com, block anything with credential theft, and deny if risk score exceeds 10." That's not a scanner — that's a security policy engine. This is what enterprises need before they adopt a security tool as infrastructure.
+
 ## 2026-02-23 (7:00 AM) — 5 New Detection Rules: Path Traversal, Command Injection, Prototype Pollution, Advanced SSRF, ReDoS
 **What:** 5 new rule categories with 44 patterns covering fundamental security vulnerabilities the scanner was missing. Total rules: 32 → 37. Total patterns: 289 → 333.
 **New rules:**

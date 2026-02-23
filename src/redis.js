@@ -376,6 +376,36 @@ async function removeListItem(apiKey, listType, itemId) {
   return redis('HDEL', key, itemId);
 }
 
+// --- Security Policies ---
+
+async function storePolicy(apiKey, policy) {
+  const key = `policies:${apiKey}`;
+  await redis('HSET', key, policy.id, JSON.stringify(policy));
+}
+
+async function getPolicy(apiKey, policyId) {
+  const key = `policies:${apiKey}`;
+  const val = await redis('HGET', key, policyId);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function listPolicies(apiKey) {
+  const key = `policies:${apiKey}`;
+  const val = await redis('HGETALL', key);
+  if (!val || !Array.isArray(val) || val.length === 0) return [];
+  const items = [];
+  for (let i = 0; i < val.length; i += 2) {
+    try { items.push(JSON.parse(val[i + 1])); } catch {}
+  }
+  return items;
+}
+
+async function removePolicy(apiKey, policyId) {
+  const key = `policies:${apiKey}`;
+  return redis('HDEL', key, policyId);
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
@@ -390,6 +420,7 @@ module.exports = {
   storeContentHash, getByContentHash, getUniqueHashCount,
   addWebhook, getWebhooks, getWebhook, removeWebhook, getAllWebhookKeys,
   addListItem, getList, getListItem, removeListItem,
+  storePolicy, getPolicy, listPolicies, removePolicy,
 };
 
 // --- Webhook Subscriptions ---

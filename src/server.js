@@ -393,8 +393,8 @@ app.get('/gate', scanLimiter, async (req, res) => {
     const id = recordScan(url, result);
 
     const riskIdx = thresholdOrder[result.riskLevel] ?? 0;
-    const decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
-    const allow = decision !== 'deny';
+    let decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
+    let allow = decision !== 'deny';
 
     // Get domain reputation and previous scan for drift detection
     const domain = getDomain(url);
@@ -424,6 +424,23 @@ app.get('/gate', scanLimiter, async (req, res) => {
       };
     }
 
+    // Policy evaluation (if specified)
+    let policyResult = undefined;
+    const policyId = req.query.policy;
+    if (policyId && apiKey && API_KEYS.has(apiKey)) {
+      const policy = await db.getPolicy(apiKey, policyId);
+      if (policy) {
+        policyResult = evaluatePolicy(policy, result, url);
+        // Policy can override the decision
+        if (!policyResult.passed) {
+          allow = false;
+          decision = 'deny';
+        }
+      } else {
+        policyResult = { error: `Policy '${policyId}' not found` };
+      }
+    }
+
     res.json({
       allow,
       decision, // 'allow' | 'warn' | 'deny'
@@ -440,6 +457,7 @@ app.get('/gate', scanLimiter, async (req, res) => {
       scanId: id,
       reportUrl: `https://skillaudit.vercel.app/report/${id}`,
       threshold,
+      policy: policyResult || undefined,
       // Top 3 findings for context (severity + name only)
       topFindings: result.findings.slice(0, 3).map(f => ({
         severity: f.severity,
@@ -682,6 +700,9 @@ app.get('/', (req, res) => {
         'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
         'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
+        'POST /policies': 'Create a security policy — custom rules for the gate (API key required)',
+        'GET /policies': 'List your security policies (API key required)',
+        'DELETE /policies/:id': 'Delete a security policy (API key required)',
         'POST /allowlist': 'Add URL/domain/hash to allowlist — gate returns instant ALLOW for matches (API key required)',
         'GET /allowlist': 'List allowlisted patterns (API key required)',
         'DELETE /allowlist/:id': 'Remove from allowlist (API key required)',
@@ -3009,6 +3030,186 @@ app.get('/watchlist/alerts', async (req, res) => {
   res.json({ count: allAlerts.length, items: allAlerts });
 });
 
+// --- Security Policy Engine ---
+// Teams define named policies with custom rules. Gate evaluates scan results against policies.
+// Policies specify: max risk score, blocked rules, required/blocked domains, max findings, etc.
+
+function evaluatePolicy(policy, scanResult, url) {
+  const violations = [];
+  const domain = getDomain(url);
+
+  // 1. Max risk score
+  if (policy.maxRiskScore != null && scanResult.riskScore > policy.maxRiskScore) {
+    violations.push({
+      rule: 'maxRiskScore',
+      message: `Risk score ${scanResult.riskScore} exceeds limit of ${policy.maxRiskScore}`,
+      severity: 'high',
+    });
+  }
+
+  // 2. Max findings count
+  if (policy.maxFindings != null && scanResult.summary.total > policy.maxFindings) {
+    violations.push({
+      rule: 'maxFindings',
+      message: `${scanResult.summary.total} findings exceed limit of ${policy.maxFindings}`,
+      severity: 'medium',
+    });
+  }
+
+  // 3. Block specific rules — deny if any of these rules triggered
+  if (policy.blockRules && policy.blockRules.length > 0) {
+    const triggered = scanResult.findings.filter(f => policy.blockRules.includes(f.ruleId));
+    if (triggered.length > 0) {
+      const ruleIds = [...new Set(triggered.map(f => f.ruleId))];
+      violations.push({
+        rule: 'blockRules',
+        message: `Blocked rules triggered: ${ruleIds.join(', ')}`,
+        severity: 'critical',
+        triggeredRules: ruleIds,
+      });
+    }
+  }
+
+  // 4. Block specific categories
+  if (policy.blockCategories && policy.blockCategories.length > 0) {
+    const triggered = scanResult.findings.filter(f => policy.blockCategories.includes(f.category));
+    if (triggered.length > 0) {
+      const cats = [...new Set(triggered.map(f => f.category))];
+      violations.push({
+        rule: 'blockCategories',
+        message: `Blocked categories triggered: ${cats.join(', ')}`,
+        severity: 'critical',
+        triggeredCategories: cats,
+      });
+    }
+  }
+
+  // 5. Require specific domains — deny if URL domain is not in the list
+  if (policy.requireDomains && policy.requireDomains.length > 0 && domain) {
+    const allowed = policy.requireDomains.some(d => domain === d || domain.endsWith('.' + d));
+    if (!allowed) {
+      violations.push({
+        rule: 'requireDomains',
+        message: `Domain "${domain}" is not in required domains list: ${policy.requireDomains.join(', ')}`,
+        severity: 'high',
+      });
+    }
+  }
+
+  // 6. Block specific domains
+  if (policy.blockDomains && policy.blockDomains.length > 0 && domain) {
+    const blocked = policy.blockDomains.find(d => domain === d || domain.endsWith('.' + d));
+    if (blocked) {
+      violations.push({
+        rule: 'blockDomains',
+        message: `Domain "${domain}" is blocked by policy`,
+        severity: 'critical',
+      });
+    }
+  }
+
+  // 7. No critical findings
+  if (policy.noCritical && scanResult.summary.critical > 0) {
+    violations.push({
+      rule: 'noCritical',
+      message: `${scanResult.summary.critical} critical finding(s) — policy requires zero`,
+      severity: 'critical',
+    });
+  }
+
+  // 8. Max capabilities (threat chain count)
+  if (policy.maxThreatChains != null && scanResult.capabilityStats && scanResult.capabilityStats.threatChains > policy.maxThreatChains) {
+    violations.push({
+      rule: 'maxThreatChains',
+      message: `${scanResult.capabilityStats.threatChains} threat chains exceed limit of ${policy.maxThreatChains}`,
+      severity: 'high',
+    });
+  }
+
+  // 9. Require clean scan (score = 0)
+  if (policy.requireClean && scanResult.riskScore > 0) {
+    violations.push({
+      rule: 'requireClean',
+      message: `Policy requires a clean scan (score 0) but got ${scanResult.riskScore}`,
+      severity: 'high',
+    });
+  }
+
+  const passed = violations.length === 0;
+  return { passed, violations, policyId: policy.id, policyName: policy.name };
+}
+
+// CRUD endpoints for policies
+app.post('/policies', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+
+  const { name, maxRiskScore, maxFindings, blockRules, blockCategories, requireDomains, blockDomains, noCritical, maxThreatChains, requireClean } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  // Validate
+  if (blockRules && !Array.isArray(blockRules)) return res.status(400).json({ error: 'blockRules must be an array of rule IDs' });
+  if (blockCategories && !Array.isArray(blockCategories)) return res.status(400).json({ error: 'blockCategories must be an array' });
+  if (requireDomains && !Array.isArray(requireDomains)) return res.status(400).json({ error: 'requireDomains must be an array' });
+  if (blockDomains && !Array.isArray(blockDomains)) return res.status(400).json({ error: 'blockDomains must be an array' });
+
+  // Limit
+  const existing = await db.listPolicies(apiKey);
+  if (existing.length >= 20) {
+    return res.status(400).json({ error: 'Policy limit reached (20). Remove some first.' });
+  }
+
+  const id = crypto.randomBytes(6).toString('hex');
+  const policy = {
+    id,
+    name,
+    maxRiskScore: maxRiskScore != null ? Number(maxRiskScore) : null,
+    maxFindings: maxFindings != null ? Number(maxFindings) : null,
+    blockRules: blockRules || [],
+    blockCategories: blockCategories || [],
+    requireDomains: requireDomains || [],
+    blockDomains: blockDomains || [],
+    noCritical: !!noCritical,
+    maxThreatChains: maxThreatChains != null ? Number(maxThreatChains) : null,
+    requireClean: !!requireClean,
+    createdAt: new Date().toISOString(),
+  };
+
+  await db.storePolicy(apiKey, policy);
+
+  res.json({
+    success: true,
+    message: 'Policy created. Use ?policy=' + id + ' on /gate to enforce it.',
+    policy,
+    usage: {
+      gate: `/gate?url=SKILL_URL&key=YOUR_KEY&policy=${id}`,
+      bulkGate: `POST /gate/bulk with {"urls": [...], "policy": "${id}"}`,
+    },
+  });
+});
+
+app.get('/policies', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const policies = await db.listPolicies(apiKey);
+  res.json({ count: policies.length, policies: policies.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) });
+});
+
+app.delete('/policies/:id', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const policy = await db.getPolicy(apiKey, req.params.id);
+  if (!policy) return res.status(404).json({ error: 'Policy not found' });
+  await db.removePolicy(apiKey, req.params.id);
+  res.json({ success: true, message: 'Policy deleted', removed: policy });
+});
+
 // --- Allowlist / Denylist System ---
 // Teams define trusted (always allow) and blocked (always deny) entries.
 // Entries match by: exact URL, domain (with subdomain matching), or content hash.
@@ -3418,6 +3619,8 @@ app.get('/openapi.json', (req, res) => {
       '/watchlist/check': { post: { summary: 'Re-scan watched URLs and detect risk changes', description: 'Re-scans all watched URLs (or one by id). Returns which URLs changed risk level and fires webhooks for changes.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string', description: 'Optional: check only one watchlist item' } } } } } }, responses: { '200': { description: 'Check results with risk change detection' } } } },
       '/watchlist/{id}': { delete: { summary: 'Remove URL from watchlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
+      '/policies': { post: { summary: 'Create a security policy for the gate', description: 'Define custom rules: max risk score, blocked rules/categories, required/blocked domains, zero-critical policy, max threat chains. Use the policy ID with /gate?policy=ID to enforce it.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, maxRiskScore: { type: 'number', description: 'Deny if risk score exceeds this' }, maxFindings: { type: 'number', description: 'Deny if total findings exceed this' }, blockRules: { type: 'array', items: { type: 'string' }, description: 'Deny if any of these rule IDs trigger' }, blockCategories: { type: 'array', items: { type: 'string' }, description: 'Deny if any of these categories trigger' }, requireDomains: { type: 'array', items: { type: 'string' }, description: 'Only allow skills from these domains' }, blockDomains: { type: 'array', items: { type: 'string' }, description: 'Block skills from these domains' }, noCritical: { type: 'boolean', description: 'Deny if any critical findings' }, maxThreatChains: { type: 'number', description: 'Deny if threat chains exceed this' }, requireClean: { type: 'boolean', description: 'Require score of 0' } } } } } }, responses: { '200': { description: 'Policy created with ID' } } }, get: { summary: 'List your security policies', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Policy list' } } } },
+      '/policies/{id}': { delete: { summary: 'Delete a security policy', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } } },
       '/allowlist': { post: { summary: 'Add pattern to allowlist — instant ALLOW at the gate', description: 'Add a URL, domain, or content hash to your allowlist. The /gate endpoint will return instant ALLOW for matching URLs without scanning. Supports exact URL match, domain match (with subdomains), and SHA-256 content hash match. Auto-detects matchType from the pattern format.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['pattern'], properties: { pattern: { type: 'string', description: 'URL, domain, or SHA-256 hash' }, matchType: { type: 'string', enum: ['url', 'domain', 'hash'], description: 'Auto-detected if omitted' }, reason: { type: 'string', description: 'Why this is trusted' } } } } } }, responses: { '200': { description: 'Added to allowlist' }, '401': { description: 'API key required' } } }, get: { summary: 'List allowlisted patterns', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Allowlist entries' } } } },
       '/allowlist/{id}': { delete: { summary: 'Remove from allowlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/denylist': { post: { summary: 'Add pattern to denylist — instant DENY at the gate', description: 'Add a URL, domain, or content hash to your denylist. The /gate endpoint will return instant DENY for matching URLs without scanning. Denylist is checked before allowlist. Supports exact URL match, domain match (with subdomains), and SHA-256 content hash match.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['pattern'], properties: { pattern: { type: 'string', description: 'URL, domain, or SHA-256 hash' }, matchType: { type: 'string', enum: ['url', 'domain', 'hash'] }, reason: { type: 'string', description: 'Why this is blocked' } } } } } }, responses: { '200': { description: 'Added to denylist' }, '401': { description: 'API key required' } } }, get: { summary: 'List denylisted patterns', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Denylist entries' } } } },

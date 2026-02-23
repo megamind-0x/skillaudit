@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skillaudit"
+version = "0.1.0"
+description = "Security scanner for AI agent skills — check before you install"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "Megamind", email = "megamind0x@proton.me"}]
+keywords = ["security", "ai", "agent", "mcp", "langchain", "scanning", "audit"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://skillaudit.vercel.app"
+Documentation = "https://skillaudit.vercel.app/docs"
+Repository = "https://github.com/megamind-0x/skillaudit"
+Issues = "https://github.com/megamind-0x/skillaudit/issues"
+
+[tool.setuptools.packages.find]
+include = ["skillaudit*"]

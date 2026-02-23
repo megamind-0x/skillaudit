@@ -1,3 +1,9 @@
 node_modules/
 .env
 *.log
+python/dist/
+python/build/
+python/*.egg-info/
+python/skillaudit.egg-info/
+python/skillaudit/*.egg-info/
+__pycache__/

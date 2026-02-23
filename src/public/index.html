@@ -168,6 +168,11 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
 .pkg-warning{padding:0.4rem 0.75rem;background:#3d2a0a;border-left:3px solid #ffaa00;border-radius:0 6px 6px 0;margin-bottom:0.4rem;font-size:0.82rem;color:#ddd}
 .pkg-warning.warn-high{background:#3d1a0a;border-left-color:#ff4444}
 
+/* Threat intel */
+.threat-chain-item{background:#1a1020;border:1px solid #3d1a2a;border-radius:8px;padding:0.6rem 0.8rem;display:flex;justify-content:space-between;align-items:center}
+.threat-chain-item .chain-name{color:#ddd;font-size:0.8rem;font-weight:600;text-transform:capitalize}
+.threat-chain-item .chain-count{background:#3d0a0a;color:#ff4444;font-size:0.85rem;font-weight:800;padding:0.15rem 0.5rem;border-radius:10px;min-width:28px;text-align:center}
+
 @media(max-width:600px){
   .input-row{flex-direction:column}
   h1{font-size:2rem}
@@ -247,6 +252,12 @@ footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1
   </div>
 </div>
 </section>
+
+<div class="recent-scans" id="threat-intel" style="display:none;margin:2rem 0;border-color:#ff444444">
+  <h2 style="color:#ff4444;font-size:1rem;margin-bottom:0.3rem">🚨 Live Threat Intelligence</h2>
+  <p style="color:#888;font-size:0.8rem;margin-bottom:0.8rem">Real threat chains detected across <span id="threat-scan-count" style="color:#fff;font-weight:700">0</span> scans</p>
+  <div id="threat-chains" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.5rem"></div>
+</div>
 
 <section aria-label="Threat detection">
 <h2 style="color:#00ff88;font-size:1.2rem;margin-bottom:0.5rem;border-bottom:1px solid #2a2a5a;padding-bottom:0.5rem">What We Detect — Agent Safety Threats</h2>
@@ -494,7 +505,22 @@ async function loadTools(){
     }
   }catch{}
 }
-loadStats();loadRecent();loadTools();
+async function loadThreatIntel(){
+  try{const r=await fetch('/stats');const d=await r.json();
+    const chains=d.threatChains||[];
+    if(chains.length>0){
+      document.getElementById('threat-scan-count').textContent=d.totalScans||0;
+      const icons={'PERSISTENCE_WITH_THEFT':'🔑','SYSTEM_COMPROMISE':'💀','AGENT_MANIPULATION':'🧠','CREDENTIAL_OBFUSCATION':'🎭','SESSION_HIJACKING':'⛓️','DROPPER_BEHAVIOR':'💣','COMMAND_AND_CONTROL':'📡','STAGED_EXFILTRATION':'📤','DATA_EXFILTRATION':'📡','PROMPT_INJECTION':'💉'};
+      document.getElementById('threat-chains').innerHTML=chains.map(c=>{
+        const name=c.threatChain.replace(/_/g,' ').toLowerCase();
+        const icon=icons[c.threatChain]||'⚠️';
+        return`<div class="threat-chain-item"><span class="chain-name">${icon} ${name}</span><span class="chain-count">${c.count}</span></div>`;
+      }).join('');
+      document.getElementById('threat-intel').style.display='block';
+    }
+  }catch{}
+}
+loadStats();loadRecent();loadTools();loadThreatIntel();
 </script>
 </body>
 </html>

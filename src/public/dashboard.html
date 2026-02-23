@@ -140,10 +140,10 @@ async function loadDashboard() {
     const rd = stats.riskDistribution || {};
     const total = Object.values(rd).reduce((a,b) => a+b, 0) || 1;
     const threats = feed.recentThreats || [];
-    const flagged = (domains.domains || []).slice(0, 10);
-    const topRules = (rules.allTime || []).slice(0, 10);
-    const todayRules = (rules.today || []).slice(0, 5);
-    const maxHits = topRules.length > 0 ? topRules[0].hits : 1;
+    const flagged = (domains.items || domains.domains || []).slice(0, 10);
+    const topRules = (Array.isArray(rules.allTime) ? rules.allTime : rules.allTime?.items || []).slice(0, 10);
+    const todayRules = (Array.isArray(rules.today) ? rules.today : rules.today?.items || []).slice(0, 5);
+    const maxHits = topRules.length > 0 ? (topRules[0].hits || topRules[0].hitCount || 1) : 1;
 
     // Calculate threat rate
     const recentCount = threats.length;
@@ -218,8 +218,8 @@ async function loadDashboard() {
             <li>
               <span class="sev ${r.severity || 'medium'}">${(r.severity||'?')[0].toUpperCase()}</span>
               <span class="rule-name" title="${esc(r.ruleId)}">${esc(r.ruleId)}</span>
-              <span class="rule-count">${fmt(r.hits)}</span>
-              <div class="rule-bar-bg"><div class="rule-bar-fill" style="width:${r.hits/maxHits*100}%"></div></div>
+              <span class="rule-count">${fmt(r.hits||r.hitCount||0)}</span>
+              <div class="rule-bar-bg"><div class="rule-bar-fill" style="width:${(r.hits||r.hitCount||0)/maxHits*100}%"></div></div>
             </li>
           `).join('')}
         </ul>`}
@@ -247,7 +247,7 @@ async function loadDashboard() {
           ${todayRules.map(r => `
             <li>
               <span class="rule-name">${esc(r.ruleId)}</span>
-              <span class="rule-count">${fmt(r.hits)}</span>
+              <span class="rule-count">${fmt(r.hits||r.hitCount||0)}</span>
             </li>
           `).join('')}
         </ul>`}

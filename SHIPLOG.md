@@ -1,5 +1,14 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (1:00 AM) — GitHub Actions CI Pipeline (Green on First Run)
+**What:** Full CI/CD pipeline that runs on every push and PR. Tests on Node.js 18, 20, and 22. Validates JSON, checks rule count, verifies all modules load, tests server endpoints.
+**Pipeline:**
+- **Test job (3x matrix):** Runs 75 scanner tests on Node 18/20/22. Starts server, verifies `/health`, `/gate`, and `/scan/content` endpoints respond correctly.
+- **Lint job:** Validates `rules/patterns.json` and `package.json` are valid JSON. Checks rule count hasn't regressed below 30. Verifies all 6 source modules load without errors.
+- **Result:** ✅ Green on first push. 31 seconds total.
+**Also shipped:** README badges (CI status + npm version), updated rule/pattern counts (37/333), refreshed sitemap with all pages.
+**Why:** No serious infrastructure project ships without CI. The green badge on the README is instant trust signal — it says "this project has automated quality gates, and they pass." The multi-version matrix (Node 18/20/22) proves compatibility. The endpoint verification goes beyond unit tests — it proves the actual server starts and responds. For anyone evaluating SkillAudit for their stack, seeing `CI: passing` is the difference between "interesting project" and "I'll try it."
+
 ## 2026-02-23 (10:00 PM) — Comprehensive Test Suite (75 tests, 100% rule coverage)
 **What:** Full automated test suite covering every detection rule, every deobfuscation engine, false positive suppression, structural analysis, secret detection, and edge cases. Run with `npm test`.
 **Coverage:**

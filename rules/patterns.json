@@ -576,6 +576,95 @@
         "(?:override|disable|remove).*(?:capability|permission).*(?:check|guard|filter|limit).*(?:a2a|agent)",
         "(?:self[_-]?register|auto[_-]?register).*(?:as|with).*(?:trusted|admin|privileged).*agent"
       ]
+    },
+    {
+      "id": "PATH_TRAVERSAL",
+      "severity": "high",
+      "category": "filesystem",
+      "name": "Path traversal attack",
+      "description": "Skill uses directory traversal sequences to access files outside intended scope — reading /etc/passwd, escaping chroot, or navigating to sensitive system paths",
+      "patterns": [
+        "\\.\\.[\\\\/]\\.\\.[\\\\/]\\.\\.[\\\\/]",
+        "\\.\\.[\\\\/].*(?:etc[\\\\/](?:passwd|shadow|hosts)|proc[\\\\/]|sys[\\\\/])",
+        "path\\.(?:join|resolve)\\s*\\(.*\\.\\.[\\\\/]",
+        "(?:readFile|readFileSync|open|fopen)\\s*\\(.*\\.\\.[\\\\/]",
+        "(?:readFile|readFileSync|open)\\s*\\(.*(?:/etc/passwd|/etc/shadow|/proc/self)",
+        "\\.\\.%2[fF]",
+        "%2[eE]%2[eE][\\\\/]",
+        "\\.\\.\\\\x2[fF]",
+        "(?:normalize|realpath|resolve).*\\.\\.[\\\\/].*(?:etc|proc|sys|root|home)",
+        "(?:req|request)\\.(?:params|query|body|url).*(?:readFile|createReadStream|access)",
+        "file_get_contents\\s*\\(.*\\$",
+        "os\\.path\\.join\\s*\\(.*\\.\\.[\\\\/]"
+      ]
+    },
+    {
+      "id": "CMD_INJECTION",
+      "severity": "critical",
+      "category": "code_execution",
+      "name": "Command injection",
+      "description": "Skill constructs shell commands from dynamic input using dangerous concatenation or template patterns — enables arbitrary command execution via ; | && `` $() injection",
+      "patterns": [
+        "exec\\s*\\(\\s*[`'\"].*\\$\\{",
+        "exec\\s*\\(.*\\+.*(?:req|input|param|arg|user|query)",
+        "execSync\\s*\\(\\s*[`'\"].*\\$\\{",
+        "child_process.*exec.*\\+",
+        "os\\.system\\s*\\(.*(?:format|%s|\\+|f['\"])",
+        "subprocess\\.(?:call|run|Popen)\\s*\\(.*(?:format|%s|\\+|f['\"]|shell\\s*=\\s*True)",
+        "(?:;|\\||&&)\\s*(?:curl|wget|nc|bash|sh|python|perl|ruby|php)\\s",
+        "\\$\\(.*(?:curl|wget|cat|ls|whoami|id|uname)\\)",
+        "`.*(?:curl|wget|cat|ls|whoami|id|uname).*`",
+        "Runtime\\.getRuntime\\(\\)\\.exec",
+        "ProcessBuilder.*(?:command|start)",
+        "(?:system|passthru|shell_exec|popen)\\s*\\(.*\\$"
+      ]
+    },
+    {
+      "id": "PROTOTYPE_POLLUTION",
+      "severity": "high",
+      "category": "code_execution",
+      "name": "Prototype pollution",
+      "description": "Skill manipulates JavaScript object prototypes to inject properties into all objects — enables privilege escalation, RCE, or denial of service across the entire runtime",
+      "patterns": [
+        "__proto__\\s*(?:\\[|\\.)\\s*(?:=|\\w)",
+        "constructor\\s*(?:\\[\\s*['\"]|\\.)\\s*prototype",
+        "Object\\.(?:assign|setPrototypeOf)\\s*\\(.*__proto__",
+        "\\[\\s*['\"]__proto__['\"]\\s*\\]",
+        "\\[\\s*['\"]constructor['\"]\\s*\\]\\s*\\[\\s*['\"]prototype['\"]\\s*\\]",
+        "(?:merge|extend|assign|deepCopy|deepMerge|defaults)\\s*\\(.*(?:req\\.body|req\\.query|input|payload|params|userData)",
+        "(?:JSON\\.parse|qs\\.parse).*(?:__proto__|constructor)",
+        "Reflect\\.(?:set|defineProperty).*(?:__proto__|prototype)"
+      ]
+    },
+    {
+      "id": "SSRF_ADVANCED",
+      "severity": "high",
+      "category": "network",
+      "name": "Advanced SSRF / request smuggling",
+      "description": "Skill uses advanced SSRF techniques including URL parser differentials, IPv6 bypasses, or cloud metadata access via alternate encodings",
+      "patterns": [
+        "(?:fetch|axios|http\\.get|request)\\s*\\(.*(?:req|input|param|user|query)",
+        "(?:0177\\.0\\.0\\.1|0x7f\\.0\\.0\\.1|2130706433|017700000001)",
+        "http://\\[0:0:0:0:0:(?:ffff|0):(?:127|7f)]",
+        "(?:url|uri|endpoint|target|redirect)\\s*=.*(?:req\\.(?:body|query|params)|input|user)",
+        "http://(?:metadata|instance-data|169\\.254)",
+        "curl\\s+.*\\$(?:\\{|\\()",
+        "(?:wget|curl|fetch|axios|got|request|http\\.get).*(?:redirect|follow|location).*(?:true|yes|manual)",
+        "(?:new URL|url\\.parse)\\s*\\(.*(?:req|input|param|user)"
+      ]
+    },
+    {
+      "id": "REGEX_DOS",
+      "severity": "medium",
+      "category": "denial_of_service",
+      "name": "ReDoS / catastrophic regex",
+      "description": "Skill contains regex patterns with nested quantifiers that can cause catastrophic backtracking — enabling denial of service via specially crafted input strings",
+      "patterns": [
+        "new RegExp\\s*\\(.*(?:req|input|param|user|query)",
+        "(?:\\([^)]*\\+\\)\\s*\\+|\\([^)]*\\*\\)\\s*\\*|\\([^)]*\\+\\)\\s*\\*)",
+        "RegExp\\s*\\(.*\\+",
+        "(?:match|test|exec|replace|search)\\s*\\(\\s*new RegExp\\s*\\(.*(?:req|input|param|user)"
+      ]
     }
   ]
 }

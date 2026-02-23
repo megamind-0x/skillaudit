@@ -345,6 +345,37 @@ async function getUniqueHashCount() {
   return parseInt(val) || 0;
 }
 
+// --- Allowlist / Denylist ---
+
+async function addListItem(apiKey, listType, item) {
+  // listType: 'allow' or 'deny'
+  const key = `${listType}list:${apiKey}`;
+  await redis('HSET', key, item.id, JSON.stringify(item));
+}
+
+async function getList(apiKey, listType) {
+  const key = `${listType}list:${apiKey}`;
+  const val = await redis('HGETALL', key);
+  if (!val || !Array.isArray(val) || val.length === 0) return [];
+  const items = [];
+  for (let i = 0; i < val.length; i += 2) {
+    try { items.push(JSON.parse(val[i + 1])); } catch {}
+  }
+  return items;
+}
+
+async function getListItem(apiKey, listType, itemId) {
+  const key = `${listType}list:${apiKey}`;
+  const val = await redis('HGET', key, itemId);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function removeListItem(apiKey, listType, itemId) {
+  const key = `${listType}list:${apiKey}`;
+  return redis('HDEL', key, itemId);
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
@@ -358,6 +389,7 @@ module.exports = {
   trackUrlScan, getUrlHistory, getLastUrlScan,
   storeContentHash, getByContentHash, getUniqueHashCount,
   addWebhook, getWebhooks, getWebhook, removeWebhook, getAllWebhookKeys,
+  addListItem, getList, getListItem, removeListItem,
 };
 
 // --- Webhook Subscriptions ---

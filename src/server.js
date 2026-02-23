@@ -354,6 +354,39 @@ app.get('/gate', scanLimiter, async (req, res) => {
   const thresholdOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
   const thresholdIdx = thresholdOrder[threshold] ?? 2;
 
+  // Check allowlist/denylist BEFORE scanning (API key required)
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (apiKey && API_KEYS.has(apiKey)) {
+    const denied = await checkList(apiKey, 'deny', url);
+    if (denied) {
+      return res.json({
+        allow: false,
+        decision: 'deny',
+        risk: 'blocked',
+        score: 100,
+        findings: 0,
+        verdict: `🚫 BLOCKED by denylist. Reason: ${denied.reason || 'Explicitly denied'}`,
+        domain: getDomain(url) || null,
+        listMatch: { type: 'denylist', matchType: denied.matchType, pattern: denied.pattern, reason: denied.reason },
+        threshold,
+      });
+    }
+    const allowed = await checkList(apiKey, 'allow', url);
+    if (allowed) {
+      return res.json({
+        allow: true,
+        decision: 'allow',
+        risk: 'trusted',
+        score: 0,
+        findings: 0,
+        verdict: `✅ TRUSTED — on allowlist. Reason: ${allowed.reason || 'Explicitly allowed'}`,
+        domain: getDomain(url) || null,
+        listMatch: { type: 'allowlist', matchType: allowed.matchType, pattern: allowed.pattern, reason: allowed.reason },
+        threshold,
+      });
+    }
+  }
+
   try {
     const content = await fetchUrl(url);
     const result = scanContent(content, url);
@@ -440,7 +473,33 @@ app.post('/gate/bulk', scanLimiter, async (req, res) => {
   const thresholdOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
   const thresholdIdx = thresholdOrder[threshold] ?? 2;
 
+  // Check allowlist/denylist for bulk gate
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  const hasListAccess = apiKey && API_KEYS.has(apiKey);
+
   const results = await Promise.all(urls.map(async (url) => {
+    // Check denylist first
+    if (hasListAccess) {
+      const denied = await checkList(apiKey, 'deny', url);
+      if (denied) {
+        return {
+          url, status: 'denylist', allow: false, decision: 'deny',
+          risk: 'blocked', score: 100, findings: 0, critical: 0,
+          verdict: `🚫 BLOCKED by denylist: ${denied.reason || 'Explicitly denied'}`,
+          listMatch: { type: 'denylist', pattern: denied.pattern },
+        };
+      }
+      const allowed = await checkList(apiKey, 'allow', url);
+      if (allowed) {
+        return {
+          url, status: 'allowlist', allow: true, decision: 'allow',
+          risk: 'trusted', score: 0, findings: 0, critical: 0,
+          verdict: `✅ TRUSTED — on allowlist: ${allowed.reason || 'Explicitly allowed'}`,
+          listMatch: { type: 'allowlist', pattern: allowed.pattern },
+        };
+      }
+    }
+
     try {
       const content = await fetchUrl(url);
       const result = scanContent(content, url);
@@ -623,6 +682,12 @@ app.get('/', (req, res) => {
         'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
         'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
+        'POST /allowlist': 'Add URL/domain/hash to allowlist — gate returns instant ALLOW for matches (API key required)',
+        'GET /allowlist': 'List allowlisted patterns (API key required)',
+        'DELETE /allowlist/:id': 'Remove from allowlist (API key required)',
+        'POST /denylist': 'Add URL/domain/hash to denylist — gate returns instant DENY for matches (API key required)',
+        'GET /denylist': 'List denylisted patterns (API key required)',
+        'DELETE /denylist/:id': 'Remove from denylist (API key required)',
         'POST /webhooks': 'Register webhook subscription — receive scan events matching your filters (API key required)',
         'GET /webhooks': 'List your registered webhooks (API key required)',
         'PUT /webhooks/:id': 'Update webhook filters or toggle active (API key required)',
@@ -2944,6 +3009,123 @@ app.get('/watchlist/alerts', async (req, res) => {
   res.json({ count: allAlerts.length, items: allAlerts });
 });
 
+// --- Allowlist / Denylist System ---
+// Teams define trusted (always allow) and blocked (always deny) entries.
+// Entries match by: exact URL, domain (with subdomain matching), or content hash.
+// Gate and bulk gate check these lists BEFORE scanning.
+
+// Helper: check if a URL/domain/hash matches any list entry
+async function checkList(apiKey, listType, url) {
+  if (!apiKey || !API_KEYS.has(apiKey)) return null;
+  const items = await db.getList(apiKey, listType);
+  if (!items || items.length === 0) return null;
+  const domain = getDomain(url);
+  for (const item of items) {
+    if (item.matchType === 'url' && item.pattern === url) return item;
+    if (item.matchType === 'domain' && domain) {
+      if (domain === item.pattern || domain.endsWith('.' + item.pattern)) return item;
+    }
+    if (item.matchType === 'hash' && item.pattern) return null; // Hash checked separately
+  }
+  return null;
+}
+
+async function checkHashList(apiKey, listType, contentHash) {
+  if (!apiKey || !API_KEYS.has(apiKey) || !contentHash) return null;
+  const items = await db.getList(apiKey, listType);
+  if (!items || items.length === 0) return null;
+  for (const item of items) {
+    if (item.matchType === 'hash' && item.pattern === contentHash) return item;
+  }
+  return null;
+}
+
+// Shared CRUD for both allowlist and denylist
+function registerListRoutes(listType) {
+  const label = listType === 'allow' ? 'Allowlist' : 'Denylist';
+
+  // POST /{listType}list — add an entry
+  app.post(`/${listType}list`, async (req, res) => {
+    const apiKey = req.query.key || req.headers['x-api-key'];
+    if (!apiKey || !API_KEYS.has(apiKey)) {
+      return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
+    }
+    const { pattern, matchType, reason, label: entryLabel } = req.body;
+    if (!pattern) return res.status(400).json({ error: 'pattern is required (URL, domain, or SHA-256 hash)' });
+
+    // Auto-detect matchType if not provided
+    let resolvedType = matchType;
+    if (!resolvedType) {
+      if (/^[a-f0-9]{64}$/i.test(pattern)) resolvedType = 'hash';
+      else if (/^https?:\/\//i.test(pattern)) resolvedType = 'url';
+      else resolvedType = 'domain';
+    }
+    if (!['url', 'domain', 'hash'].includes(resolvedType)) {
+      return res.status(400).json({ error: 'matchType must be url, domain, or hash' });
+    }
+
+    // Check limit (max 200 per key per list)
+    const existing = await db.getList(apiKey, listType);
+    if (existing.length >= 200) {
+      return res.status(400).json({ error: `${label} limit reached (200 entries). Remove some first.` });
+    }
+    // Prevent duplicates
+    if (existing.find(i => i.pattern === pattern && i.matchType === resolvedType)) {
+      return res.status(409).json({ error: `Pattern already on ${label.toLowerCase()}` });
+    }
+
+    const id = crypto.randomBytes(6).toString('hex');
+    const item = {
+      id,
+      pattern,
+      matchType: resolvedType,
+      reason: reason || null,
+      label: entryLabel || null,
+      addedAt: new Date().toISOString(),
+    };
+
+    await db.addListItem(apiKey, listType, item);
+
+    res.json({
+      success: true,
+      message: `Added to ${label.toLowerCase()}.`,
+      item,
+      effect: listType === 'allow'
+        ? 'Gate will return ALLOW instantly for matching URLs (no scan needed).'
+        : 'Gate will return DENY instantly for matching URLs (no scan needed).',
+    });
+  });
+
+  // GET /{listType}list — list entries
+  app.get(`/${listType}list`, async (req, res) => {
+    const apiKey = req.query.key || req.headers['x-api-key'];
+    if (!apiKey || !API_KEYS.has(apiKey)) {
+      return res.status(401).json({ error: 'API key required.' });
+    }
+    const items = await db.getList(apiKey, listType);
+    res.json({
+      count: items.length,
+      listType,
+      items: items.sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt)),
+    });
+  });
+
+  // DELETE /{listType}list/:id — remove entry
+  app.delete(`/${listType}list/:id`, async (req, res) => {
+    const apiKey = req.query.key || req.headers['x-api-key'];
+    if (!apiKey || !API_KEYS.has(apiKey)) {
+      return res.status(401).json({ error: 'API key required.' });
+    }
+    const item = await db.getListItem(apiKey, listType, req.params.id);
+    if (!item) return res.status(404).json({ error: `${label} entry not found` });
+    await db.removeListItem(apiKey, listType, req.params.id);
+    res.json({ success: true, message: `Removed from ${label.toLowerCase()}`, removed: item });
+  });
+}
+
+registerListRoutes('allow');
+registerListRoutes('deny');
+
 // --- Webhook Event Subscriptions ---
 // POST /webhooks — register a webhook to receive scan events matching your filters
 app.post('/webhooks', async (req, res) => {
@@ -3197,7 +3379,7 @@ app.get('/openapi.json', (req, res) => {
     },
     servers: [{ url: 'https://skillaudit.vercel.app', description: 'Production' }],
     paths: {
-      '/gate': { get: { summary: 'Pre-install gate — should I install this skill?', description: 'The infrastructure endpoint. Returns a simple allow/warn/deny decision with minimal JSON. Designed for agents to call before installing ANY skill. One call, one answer.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill to check' }, { name: 'threshold', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' }, description: 'Risk threshold — deny at or above this level' }], responses: { '200': { description: 'Gate decision: {allow: bool, decision: "allow"|"warn"|"deny", risk, score, findings, verdict}' }, '400': { description: 'Missing URL or fetch error' } } } },
+      '/gate': { get: { summary: 'Pre-install gate — should I install this skill?', description: 'The infrastructure endpoint. Returns a simple allow/warn/deny decision with minimal JSON. Designed for agents to call before installing ANY skill. One call, one answer. With an API key, checks allowlist/denylist BEFORE scanning for instant decisions.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill to check' }, { name: 'threshold', in: 'query', required: false, schema: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' }, description: 'Risk threshold — deny at or above this level' }, { name: 'key', in: 'query', required: false, schema: { type: 'string' }, description: 'API key — enables allowlist/denylist instant decisions' }], responses: { '200': { description: 'Gate decision: {allow: bool, decision: "allow"|"warn"|"deny", risk, score, findings, verdict, listMatch?}' }, '400': { description: 'Missing URL or fetch error' } } } },
       '/gate/bulk': { post: { summary: 'Bulk pre-install gate — check multiple skills at once', description: 'The infrastructure endpoint for agent frameworks. Pass an array of skill URLs, get a single composite allow/deny decision. Deny if ANY skill fails. Agents install skill sets, not singles — this endpoint handles that.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['urls'], properties: { urls: { type: 'array', items: { type: 'string' }, description: 'Array of skill URLs to check (max 20)' }, threshold: { type: 'string', enum: ['low', 'moderate', 'high', 'critical'], default: 'moderate' } } } } } }, responses: { '200': { description: 'Composite gate decision: {allow: bool, decision, blocked[], results[]}' } } } },
       '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents. Add ?format=sarif for SARIF v2.1.0 output.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json', 'sarif'] }, description: 'Output format (default: json, sarif for SARIF v2.1.0)' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
@@ -3236,6 +3418,10 @@ app.get('/openapi.json', (req, res) => {
       '/watchlist/check': { post: { summary: 'Re-scan watched URLs and detect risk changes', description: 'Re-scans all watched URLs (or one by id). Returns which URLs changed risk level and fires webhooks for changes.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string', description: 'Optional: check only one watchlist item' } } } } } }, responses: { '200': { description: 'Check results with risk change detection' } } } },
       '/watchlist/{id}': { delete: { summary: 'Remove URL from watchlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/watchlist/alerts': { get: { summary: 'View all risk change alerts across watched URLs', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Alert history' } } } },
+      '/allowlist': { post: { summary: 'Add pattern to allowlist — instant ALLOW at the gate', description: 'Add a URL, domain, or content hash to your allowlist. The /gate endpoint will return instant ALLOW for matching URLs without scanning. Supports exact URL match, domain match (with subdomains), and SHA-256 content hash match. Auto-detects matchType from the pattern format.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['pattern'], properties: { pattern: { type: 'string', description: 'URL, domain, or SHA-256 hash' }, matchType: { type: 'string', enum: ['url', 'domain', 'hash'], description: 'Auto-detected if omitted' }, reason: { type: 'string', description: 'Why this is trusted' } } } } } }, responses: { '200': { description: 'Added to allowlist' }, '401': { description: 'API key required' } } }, get: { summary: 'List allowlisted patterns', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Allowlist entries' } } } },
+      '/allowlist/{id}': { delete: { summary: 'Remove from allowlist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
+      '/denylist': { post: { summary: 'Add pattern to denylist — instant DENY at the gate', description: 'Add a URL, domain, or content hash to your denylist. The /gate endpoint will return instant DENY for matching URLs without scanning. Denylist is checked before allowlist. Supports exact URL match, domain match (with subdomains), and SHA-256 content hash match.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['pattern'], properties: { pattern: { type: 'string', description: 'URL, domain, or SHA-256 hash' }, matchType: { type: 'string', enum: ['url', 'domain', 'hash'] }, reason: { type: 'string', description: 'Why this is blocked' } } } } } }, responses: { '200': { description: 'Added to denylist' }, '401': { description: 'API key required' } } }, get: { summary: 'List denylisted patterns', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Denylist entries' } } } },
+      '/denylist/{id}': { delete: { summary: 'Remove from denylist', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/webhooks': { post: { summary: 'Register webhook subscription for scan events', description: 'Subscribe to scan events matching your filters. SkillAudit will POST to your URL whenever a scan completes that matches your criteria. Filter by minimum severity, specific domains, or specific rule IDs. Max 10 webhooks per API key.', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', description: 'Webhook endpoint URL' }, label: { type: 'string' }, minSeverity: { type: 'string', enum: ['clean', 'low', 'moderate', 'high', 'critical'] }, domains: { type: 'array', items: { type: 'string' }, description: 'Filter by domains (max 20)' }, ruleIds: { type: 'array', items: { type: 'string' }, description: 'Filter by rule IDs (max 50)' } } } } } }, responses: { '200': { description: 'Webhook registered' }, '401': { description: 'API key required' } } }, get: { summary: 'List your registered webhooks', parameters: [{ name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Webhook list' } } } },
       '/webhooks/{id}': { put: { summary: 'Update webhook filters or toggle active', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } }, delete: { summary: 'Remove a webhook', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Removed' } } } },
       '/webhooks/{id}/test': { post: { summary: 'Send a test event to your webhook endpoint', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'key', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Test event sent' } } } },

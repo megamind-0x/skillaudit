@@ -1,5 +1,21 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-23 (4:00 PM) — Integration Guides Page (/integrations)
+**What:** Beautiful, copy-paste integration page at `/integrations` with complete working code snippets for 9 frameworks.
+**Frameworks covered:**
+- **curl** — one-liner quick start
+- **LangChain / LangGraph** — Python gate function + @tool decorator for agents to call
+- **CrewAI** — security guard agent pattern + bulk gate
+- **OpenAI Agents SDK** — @function_tool guardrail
+- **Node.js / TypeScript** — zero-dependency async gate check + bulk
+- **OpenClaw** — AGENTS.md policy snippet + CLI commands
+- **GitHub Actions** — complete workflow YAML with PR comments
+- **MCP Server** — Claude Desktop config for `npx skillaudit-mcp`
+- **AutoGen / AG2** — register_function pattern
+- **Webhooks** — Slack incoming webhook + SIEM integration
+**Design:** Dark theme, accordion UI, syntax-highlighted code with copy buttons, step-by-step instructions. Every snippet is complete — no "fill in later" or pseudocode.
+**Why:** The biggest barrier to adoption isn't features — it's friction. Every agent developer who visits SkillAudit needs to see "here's how to add this to MY stack in 3 minutes." This page is the conversion funnel. Before: developer finds SkillAudit → reads docs → figures out how to integrate → maybe tries it. Now: developer finds SkillAudit → clicks "Integration Guides" → copies 5 lines of code → done. The page covers every major agent framework so no one leaves thinking "this doesn't work with my stack."
+
 ## 2026-02-23 (1:00 PM) — Security Policy Engine + Allowlist/Denylist
 **What:** Two features shipped together — both are enterprise-critical for SkillAudit becoming infrastructure.
 

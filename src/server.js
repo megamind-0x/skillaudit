@@ -721,6 +721,7 @@ app.get('/', (req, res) => {
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /dashboard': 'Live threat dashboard — real-time ecosystem security stats, risk trends, flagged domains',
         'GET /docs': 'Interactive API documentation with try-it-out forms and examples',
+        'GET /integrations': 'Copy-paste integration guides for LangChain, CrewAI, OpenAI, AutoGen, GitHub Actions, MCP, and more',
         'GET /health': 'Health check',
       }
     });
@@ -738,6 +739,10 @@ app.get('/dashboard', (req, res) => {
 
 app.get('/lattice', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'lattice.html'));
+});
+
+app.get('/integrations', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'integrations.html'));
 });
 
 app.get('/health', (req, res) => {

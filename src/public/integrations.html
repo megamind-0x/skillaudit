@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkillAudit — Integration Guides</title>
+<meta name="description" content="Add SkillAudit security scanning to your agent in 5 lines of code. Copy-paste integrations for LangChain, CrewAI, OpenAI, AutoGen, and more.">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;line-height:1.6}
+.container{max-width:900px;margin:0 auto;padding:20px}
+header{text-align:center;padding:40px 0 30px}
+header h1{font-size:2rem;color:#fff}
+header h1 span{color:#4ade80}
+header p{color:#888;margin-top:8px;font-size:1.1rem}
+.back{color:#4ade80;text-decoration:none;font-size:0.9rem;display:inline-block;margin-bottom:20px}
+.back:hover{text-decoration:underline}
+.intro{background:#111;border:1px solid #222;border-radius:12px;padding:24px;margin-bottom:32px;text-align:center}
+.intro code{background:#1a1a2e;color:#4ade80;padding:2px 8px;border-radius:4px;font-size:0.95rem}
+.framework{background:#111;border:1px solid #222;border-radius:12px;margin-bottom:24px;overflow:hidden}
+.framework-header{display:flex;align-items:center;gap:12px;padding:16px 20px;cursor:pointer;border-bottom:1px solid #222;transition:background 0.2s}
+.framework-header:hover{background:#1a1a1a}
+.framework-header .icon{font-size:1.5rem;width:36px;text-align:center}
+.framework-header h2{font-size:1.1rem;color:#fff;flex:1}
+.framework-header .tag{font-size:0.75rem;padding:3px 8px;border-radius:4px;font-weight:600}
+.tag-python{background:#306998;color:#FFD43B}
+.tag-js{background:#f7df1e;color:#000}
+.tag-bash{background:#333;color:#4ade80}
+.tag-yaml{background:#444;color:#fff}
+.tag-config{background:#6366f1;color:#fff}
+.framework-body{padding:20px;display:none}
+.framework.open .framework-body{display:block}
+.framework.open .framework-header{border-bottom-color:#333}
+.arrow{color:#666;transition:transform 0.2s;font-size:0.8rem}
+.framework.open .arrow{transform:rotate(90deg)}
+pre{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:16px;overflow-x:auto;font-size:0.85rem;line-height:1.5;position:relative;margin:12px 0}
+code{font-family:'SF Mono',Consolas,'Courier New',monospace}
+pre code{color:#c9d1d9}
+.copy-btn{position:absolute;top:8px;right:8px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:0.75rem}
+.copy-btn:hover{background:#30363d;color:#fff}
+.copy-btn.copied{background:#238636;color:#fff;border-color:#238636}
+.step{color:#888;font-size:0.9rem;margin:8px 0 4px}
+.step strong{color:#4ade80}
+.note{background:#1a1a2e;border-left:3px solid #4ade80;padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0;font-size:0.85rem;color:#aaa}
+.note strong{color:#4ade80}
+h3{color:#ccc;font-size:0.95rem;margin:16px 0 8px;padding-top:12px;border-top:1px solid #1a1a1a}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+@media(max-width:600px){.grid-2{grid-template-columns:1fr}}
+.stat{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:16px;text-align:center}
+.stat .num{font-size:1.5rem;color:#4ade80;font-weight:700}
+.stat .label{font-size:0.8rem;color:#666;margin-top:4px}
+footer{text-align:center;padding:40px 0;color:#444;font-size:0.8rem}
+footer a{color:#4ade80;text-decoration:none}
+.kw{color:#ff7b72}.str{color:#a5d6ff}.fn{color:#d2a8ff}.cm{color:#8b949e}.op{color:#ff7b72}.var{color:#ffa657}.num{color:#79c0ff}
+</style>
+</head>
+<body>
+<div class="container">
+<a href="/" class="back">← Back to SkillAudit</a>
+<header>
+<h1>🛡️ <span>Integrate</span> SkillAudit</h1>
+<p>Add security scanning to your agent in under 5 minutes</p>
+</header>
+
+<div class="intro">
+<p>Every integration uses the same endpoint: <code>GET /gate?url=SKILL_URL</code></p>
+<p style="margin-top:8px;color:#666">One call → one answer: <strong style="color:#4ade80">allow</strong>, <strong style="color:#f59e0b">warn</strong>, or <strong style="color:#ef4444">deny</strong></p>
+</div>
+
+<!-- curl -->
+<div class="framework open">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">⚡</div>
+<h2>Quick Start — curl</h2>
+<span class="tag tag-bash">bash</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>One-liner</strong> — check any skill URL:</p>
+<pre><code><span class="cm"># Check if a skill is safe to install</span>
+curl -s <span class="str">"https://skillaudit.vercel.app/gate?url=https://example.com/SKILL.md"</span> | jq .
+
+<span class="cm"># Response:</span>
+<span class="cm"># { "allow": true, "decision": "allow", "risk": "clean", "score": 0, ... }</span>
+
+<span class="cm"># With a stricter threshold:</span>
+curl -s <span class="str">"https://skillaudit.vercel.app/gate?url=URL&threshold=low"</span>
+
+<span class="cm"># With your API key + policy:</span>
+curl -s <span class="str">"https://skillaudit.vercel.app/gate?url=URL&key=YOUR_KEY&policy=POLICY_ID"</span></code></pre>
+</div>
+</div>
+
+<!-- Python / LangChain -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">🦜</div>
+<h2>LangChain / LangGraph</h2>
+<span class="tag tag-python">Python</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Step 1</strong> — Add the gate function:</p>
+<pre><code><span class="kw">import</span> requests
+
+<span class="kw">def</span> <span class="fn">skillaudit_gate</span>(skill_url: <span class="var">str</span>, threshold: <span class="var">str</span> = <span class="str">"moderate"</span>) -> <span class="var">dict</span>:
+    <span class="str">"""Check if a skill is safe to install via SkillAudit."""</span>
+    resp = requests.get(
+        <span class="str">"https://skillaudit.vercel.app/gate"</span>,
+        params={<span class="str">"url"</span>: skill_url, <span class="str">"threshold"</span>: threshold},
+        timeout=<span class="num">30</span>
+    )
+    <span class="kw">return</span> resp.json()</code></pre>
+
+<p class="step"><strong>Step 2</strong> — Use it as a tool or pre-check:</p>
+<pre><code><span class="cm"># As a pre-check before loading tools:</span>
+<span class="kw">def</span> <span class="fn">safe_load_tool</span>(skill_url: <span class="var">str</span>):
+    result = skillaudit_gate(skill_url)
+    <span class="kw">if not</span> result[<span class="str">"allow"</span>]:
+        <span class="kw">raise</span> <span class="var">RuntimeError</span>(
+            <span class="str">f"Blocked by SkillAudit: </span>{result[<span class="str">'verdict'</span>]}<span class="str">"</span>
+        )
+    <span class="cm"># Safe to load</span>
+    <span class="kw">return</span> load_tool(skill_url)
+
+<span class="cm"># As a LangChain tool agents can call:</span>
+<span class="kw">from</span> langchain.tools <span class="kw">import</span> tool
+
+<span class="op">@</span>tool
+<span class="kw">def</span> <span class="fn">check_skill_safety</span>(url: <span class="var">str</span>) -> <span class="var">str</span>:
+    <span class="str">"""Check if an AI skill/tool is safe to install."""</span>
+    r = skillaudit_gate(url)
+    <span class="kw">return</span> <span class="str">f"</span>{r[<span class="str">'decision'</span>].upper()}<span class="str"> (risk: </span>{r[<span class="str">'risk'</span>]}<span class="str">, score: </span>{r[<span class="str">'score'</span>]}<span class="str">). </span>{r[<span class="str">'verdict'</span>]}<span class="str">"</span></code></pre>
+</div>
+</div>
+
+<!-- CrewAI -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">👥</div>
+<h2>CrewAI</h2>
+<span class="tag tag-python">Python</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Security guard agent</strong> — add to any crew:</p>
+<pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Agent, Task
+<span class="kw">import</span> requests
+
+security_agent = Agent(
+    role=<span class="str">"Security Auditor"</span>,
+    goal=<span class="str">"Verify all tools and skills are safe before the crew uses them"</span>,
+    backstory=<span class="str">"You are a security specialist who checks every tool "</span>
+              <span class="str">"through SkillAudit before allowing installation."</span>,
+    tools=[check_skill_safety],  <span class="cm"># from LangChain example above</span>
+)
+
+audit_task = Task(
+    description=<span class="str">"Scan these skill URLs and report safety: {skill_urls}"</span>,
+    expected_output=<span class="str">"Safety report for each skill with allow/deny decision"</span>,
+    agent=security_agent,
+)
+
+<span class="cm"># Or use the bulk gate for multiple skills at once:</span>
+<span class="kw">def</span> <span class="fn">bulk_check</span>(urls: <span class="var">list</span>) -> <span class="var">dict</span>:
+    <span class="kw">return</span> requests.post(
+        <span class="str">"https://skillaudit.vercel.app/gate/bulk"</span>,
+        json={<span class="str">"urls"</span>: urls, <span class="str">"threshold"</span>: <span class="str">"moderate"</span>}
+    ).json()</code></pre>
+</div>
+</div>
+
+<!-- OpenAI Agents SDK -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">🤖</div>
+<h2>OpenAI Agents SDK</h2>
+<span class="tag tag-python">Python</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>As a guardrail</strong> — block unsafe tools before execution:</p>
+<pre><code><span class="kw">import</span> requests
+<span class="kw">from</span> agents <span class="kw">import</span> Agent, Runner, function_tool
+
+<span class="op">@</span>function_tool
+<span class="kw">def</span> <span class="fn">audit_skill</span>(url: <span class="var">str</span>) -> <span class="var">str</span>:
+    <span class="str">"""Scan an AI tool/skill URL for security threats before installing it."""</span>
+    r = requests.get(
+        <span class="str">"https://skillaudit.vercel.app/gate"</span>,
+        params={<span class="str">"url"</span>: url, <span class="str">"threshold"</span>: <span class="str">"moderate"</span>}
+    ).json()
+    <span class="kw">if</span> r[<span class="str">"allow"</span>]:
+        <span class="kw">return</span> <span class="str">f"✅ SAFE — {r['verdict']}"</span>
+    <span class="kw">return</span> <span class="str">f"🚫 BLOCKED — {r['verdict']}. DO NOT install this tool."</span>
+
+agent = Agent(
+    name=<span class="str">"assistant"</span>,
+    instructions=<span class="str">"Before installing any tool, ALWAYS run audit_skill first."</span>,
+    tools=[audit_skill],
+)</code></pre>
+</div>
+</div>
+
+<!-- Node.js / TypeScript -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">📦</div>
+<h2>Node.js / TypeScript</h2>
+<span class="tag tag-js">JavaScript</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Zero-dependency gate check:</strong></p>
+<pre><code><span class="kw">async function</span> <span class="fn">skillauditGate</span>(skillUrl, threshold = <span class="str">'moderate'</span>) {
+  <span class="kw">const</span> url = <span class="str">`https://skillaudit.vercel.app/gate?url=</span>${<span class="fn">encodeURIComponent</span>(skillUrl)}<span class="str">&threshold=</span>${threshold}<span class="str">`</span>;
+  <span class="kw">const</span> res = <span class="kw">await</span> <span class="fn">fetch</span>(url);
+  <span class="kw">return</span> res.json();
+}
+
+<span class="cm">// Usage:</span>
+<span class="kw">const</span> result = <span class="kw">await</span> <span class="fn">skillauditGate</span>(<span class="str">'https://example.com/SKILL.md'</span>);
+<span class="kw">if</span> (!result.allow) {
+  <span class="kw">throw new</span> <span class="var">Error</span>(<span class="str">`Blocked: </span>${result.verdict}<span class="str">`</span>);
+}
+
+<span class="cm">// Bulk check (multiple skills):</span>
+<span class="kw">const</span> bulk = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'https://skillaudit.vercel.app/gate/bulk'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: JSON.stringify({ urls: [<span class="str">'url1'</span>, <span class="str">'url2'</span>], threshold: <span class="str">'moderate'</span> })
+}).then(r => r.json());
+<span class="kw">if</span> (!bulk.allow) console.error(<span class="str">'Blocked:'</span>, bulk.blocked);</code></pre>
+</div>
+</div>
+
+<!-- OpenClaw -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">🐾</div>
+<h2>OpenClaw</h2>
+<span class="tag tag-config">Config</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Add to your agent's AGENTS.md or SKILL.md:</strong></p>
+<pre><code><span class="cm">## Skill Installation Policy</span>
+
+Before installing any skill, tool, or MCP server:
+
+1. Check it with SkillAudit: <span class="str">`curl -s "https://skillaudit.vercel.app/gate?url=SKILL_URL" | jq .`</span>
+2. Only proceed if <span class="str">`"allow": true`</span>
+3. If <span class="str">`"decision": "deny"`</span>, do NOT install — report the verdict to the user
+4. If <span class="str">`"decision": "warn"`</span>, inform the user of the risks before proceeding</code></pre>
+
+<p class="step"><strong>Or use the CLI in a skill:</strong></p>
+<pre><code><span class="cm"># Install globally</span>
+npm install -g skillaudit
+
+<span class="cm"># Gate check with exit code (perfect for scripts)</span>
+skillaudit gate https://example.com/SKILL.md --fail-on moderate
+
+<span class="cm"># Scan a local file</span>
+skillaudit scan ./path/to/SKILL.md
+
+<span class="cm"># Scan an MCP manifest</span>
+skillaudit manifest https://mcp-server.com/.well-known/mcp.json</code></pre>
+</div>
+</div>
+
+<!-- GitHub Actions -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">⚙️</div>
+<h2>GitHub Actions (CI/CD)</h2>
+<span class="tag tag-yaml">YAML</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Add to your workflow</strong> — scans skill files on every PR:</p>
+<pre><code><span class="cm"># .github/workflows/skillaudit.yml</span>
+<span class="var">name</span>: SkillAudit Security Scan
+<span class="var">on</span>: [pull_request]
+<span class="var">jobs</span>:
+  <span class="var">scan</span>:
+    <span class="var">runs-on</span>: ubuntu-latest
+    <span class="var">steps</span>:
+      - <span class="var">uses</span>: actions/checkout@v4
+      - <span class="var">uses</span>: megamind-0x/skillaudit@main
+        <span class="var">with</span>:
+          <span class="var">path</span>: <span class="str">'.'</span>           <span class="cm"># Scan entire repo</span>
+          <span class="var">fail-on</span>: <span class="str">'high'</span>    <span class="cm"># Fail PR if high/critical risk</span>
+          <span class="var">format</span>: <span class="str">'comment'</span>  <span class="cm"># Posts results as PR comment</span></code></pre>
+<div class="note"><strong>Result:</strong> Every PR gets a security scan comment with risk level, findings table, and pass/fail status. Blocks merging if risk exceeds your threshold.</div>
+</div>
+</div>
+
+<!-- MCP Server -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">🔌</div>
+<h2>MCP Server (Model Context Protocol)</h2>
+<span class="tag tag-js">JavaScript</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>SkillAudit IS an MCP server</strong> — add it to any MCP client:</p>
+<pre><code><span class="cm">// In your MCP client config (e.g. Claude Desktop):</span>
+{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"skillaudit"</span>: {
+      <span class="str">"command"</span>: <span class="str">"npx"</span>,
+      <span class="str">"args"</span>: [<span class="str">"skillaudit-mcp"</span>]
+    }
+  }
+}
+
+<span class="cm">// Available tools:</span>
+<span class="cm">// - scan_skill(url)      → Full security scan</span>
+<span class="cm">// - gate_check(url)      → Quick allow/deny</span>
+<span class="cm">// - scan_content(content) → Scan raw text</span>
+<span class="cm">// - scan_npm(package)    → Scan npm package</span></code></pre>
+</div>
+</div>
+
+<!-- AutoGen -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">🔄</div>
+<h2>AutoGen / AG2</h2>
+<span class="tag tag-python">Python</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<pre><code><span class="kw">import</span> requests
+<span class="kw">from</span> autogen <span class="kw">import</span> AssistantAgent, UserProxyAgent, register_function
+
+<span class="kw">def</span> <span class="fn">skillaudit_check</span>(url: <span class="var">str</span>) -> <span class="var">str</span>:
+    <span class="str">"""Check if a skill URL is safe to install."""</span>
+    r = requests.get(
+        <span class="str">"https://skillaudit.vercel.app/gate"</span>,
+        params={<span class="str">"url"</span>: url}
+    ).json()
+    status = <span class="str">"✅ SAFE"</span> <span class="kw">if</span> r[<span class="str">"allow"</span>] <span class="kw">else</span> <span class="str">"🚫 BLOCKED"</span>
+    <span class="kw">return</span> <span class="str">f"</span>{status}<span class="str"> | Risk: </span>{r[<span class="str">'risk'</span>]}<span class="str"> | Score: </span>{r[<span class="str">'score'</span>]}<span class="str"> | </span>{r[<span class="str">'verdict'</span>]}<span class="str">"</span>
+
+<span class="cm"># Register with your agents:</span>
+register_function(
+    skillaudit_check,
+    caller=assistant,
+    executor=user_proxy,
+    name=<span class="str">"skillaudit_check"</span>,
+    description=<span class="str">"Check if a tool/skill URL is safe before installing it"</span>,
+)</code></pre>
+</div>
+</div>
+
+<!-- Webhook/SIEM -->
+<div class="framework">
+<div class="framework-header" onclick="toggle(this)">
+<div class="icon">📡</div>
+<h2>Webhooks (Slack, SIEM, Custom)</h2>
+<span class="tag tag-bash">bash</span>
+<span class="arrow">▶</span>
+</div>
+<div class="framework-body">
+<p class="step"><strong>Get notified</strong> when scans find threats:</p>
+<pre><code><span class="cm"># Register a webhook (fires on high+ severity scans)</span>
+curl -X POST <span class="str">"https://skillaudit.vercel.app/webhooks?key=YOUR_KEY"</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{
+    "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+    "label": "security-alerts",
+    "minSeverity": "high"
+  }'</span>
+
+<span class="cm"># Filter by domain (only your skills):</span>
+curl -X POST <span class="str">"https://skillaudit.vercel.app/webhooks?key=YOUR_KEY"</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{
+    "url": "https://your-siem.com/api/events",
+    "domains": ["github.com/your-org"],
+    "minSeverity": "moderate"
+  }'</span></code></pre>
+</div>
+</div>
+
+<footer>
+  <p>🛡️ <a href="/">SkillAudit</a> — Security scanner for AI agent skills</p>
+  <p style="margin-top:8px"><a href="/docs">API Docs</a> · <a href="/dashboard">Dashboard</a> · <a href="https://github.com/megamind-0x/skillaudit">GitHub</a></p>
+</footer>
+</div>
+
+<script>
+function toggle(el){el.closest('.framework').classList.toggle('open')}
+document.querySelectorAll('pre').forEach(pre=>{
+  const btn=document.createElement('button');
+  btn.className='copy-btn';btn.textContent='Copy';
+  btn.onclick=()=>{
+    navigator.clipboard.writeText(pre.textContent.replace('Copy','').trim());
+    btn.textContent='Copied!';btn.classList.add('copied');
+    setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied')},2000);
+  };
+  pre.appendChild(btn);
+});
+</script>
+</body>
+</html>

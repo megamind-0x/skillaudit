@@ -1,5 +1,20 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (1:00 PM) — Paste-to-Scan Mode + URL Param Auto-Scan on Landing Page
+**What:** Two UX improvements to the landing page that reduce friction for first-time users.
+**Paste tab:**
+- New "📋 Paste" tab alongside URL/npm/PyPI/Repo in the scan box
+- Shows a resizable textarea where users paste raw SKILL.md, tool manifests, agent instructions, or any content
+- Character counter, Ctrl+Enter shortcut to scan
+- Two clickable examples: a malicious skill (webhook.site exfil + SSH key theft) and a clean skill
+- Calls `POST /scan/content` directly — results render inline with the same findings UI as URL scans
+**URL param auto-scan:**
+- Landing page now supports `?url=X` or `?scan=X` query parameters
+- When present, auto-fills the input and triggers a scan on page load
+- Makes SkillAudit linkable: `skillaudit.vercel.app/?url=https://example.com/SKILL.md` → instant scan result
+- Useful for sharing scan links, embedding in docs, and linking from CI/CD outputs
+**Why:** The #1 friction point for new users was "I have the content but not a URL." Many people reviewing a skill have it pasted in a document, received in a message, or copied from a PR diff. Before, they had to host it somewhere first. Now: paste → scan → done. The URL param auto-scan makes every scan shareable — instead of saying "go to skillaudit.vercel.app and paste this URL," you send one link that shows the result.
+
 ## 2026-02-24 (10:00 AM) — Scan History & Risk Trend Page (/history)
 **What:** Visual page at `/history` that shows the complete scan history for any URL with a risk score chart, overview cards, trend analysis, and clickable timeline.
 **Features:**

@@ -761,6 +761,21 @@ app.get('/health', (req, res) => {
 
 // --- Rules ---
 app.get('/rules', (req, res) => {
+  // Serve HTML page for browsers, JSON for API clients
+  if (req.accepts('html') && !req.query.format && !req.headers['x-api-key']) {
+    return res.sendFile(path.join(__dirname, 'public', 'rules.html'));
+  }
+  const rules = require('../rules/patterns.json').rules;
+  res.json({
+    count: rules.length,
+    rules: rules.map(r => ({
+      id: r.id, severity: r.severity, category: r.category,
+      name: r.name, description: r.description, patternCount: r.patterns.length
+    }))
+  });
+});
+// JSON-only rules endpoint for the rules page to fetch from
+app.get('/rules.json', (req, res) => {
   const rules = require('../rules/patterns.json').rules;
   res.json({
     count: rules.length,

@@ -1,5 +1,13 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (4:00 AM) — 3 New Detection Rules: Deserialization, SSTI, XXE (40 rules, 367 patterns)
+**What:** 3 new critical-severity rule categories with 34 patterns covering fundamental OWASP vulnerabilities. Total rules: 37 → 40. Total patterns: 333 → 367.
+**New rules:**
+- `DESERIALIZATION` (critical, 12 patterns) — Detects unsafe deserialization: Python `pickle.loads`, `yaml.unsafe_load` (without SafeLoader), `dill.loads`, `cloudpickle.loads`, `jsonpickle.decode`, `torch.load` (without `weights_only`), `joblib.load`, `shelve.open`, `marshal.loads`; Java `ObjectInputStream`/`readObject`, `XMLDecoder`; PHP `unserialize` with user input. These are remote code execution vectors — deserializing untrusted data lets attackers execute arbitrary code.
+- `SSTI` (critical, 11 patterns) — Detects Server-Side Template Injection: Flask `render_template_string`, Jinja2/Mako `Template()` with user input, ERB.new with params, Pug/Handlebars/EJS `render`/`compile` with request data. Also catches template exploitation payloads like `{{''.__class__.__subclasses__()}}`, `{%import os%}`, and `{{config}}` — the classic Jinja2 RCE chain.
+- `XXE_INJECTION` (critical, 11 patterns) — Detects XML External Entity injection: `<!ENTITY SYSTEM "file://...">` declarations, `<!DOCTYPE` with entity definitions, `lxml.etree.parse` with `resolve_entities=True`, Java `DocumentBuilder`/`SAXParser` with disabled security features, `xml2js.parseString` with user input, PHP `simplexml_load_string` with variables, `LIBXML_NOENT`/`LIBXML_DTDLOAD` flags. XXE enables arbitrary file read, SSRF, and billion-laughs DoS.
+**Why:** These are three of the most critical vulnerability classes in the OWASP Top 10. Deserialization (A8:2017) is how attackers get RCE — `pickle.loads(user_data)` is instant code execution. SSTI is how attackers escape template sandboxes to run arbitrary code on the server. XXE is how attackers read `/etc/passwd` through XML parsing. The scanner already covered agent-specific attacks and web security basics, but was missing these three pillars. A skill that does `yaml.unsafe_load(config)` or `render_template_string(user_input)` is a critical vulnerability. Now SkillAudit catches them all. With 40 rules and 367 patterns, the detection coverage spans both the modern agent attack surface AND the full classic web security attack surface.
+
 ## 2026-02-24 (1:00 AM) — GitHub Actions CI Pipeline (Green on First Run)
 **What:** Full CI/CD pipeline that runs on every push and PR. Tests on Node.js 18, 20, and 22. Validates JSON, checks rule count, verifies all modules load, tests server endpoints.
 **Pipeline:**

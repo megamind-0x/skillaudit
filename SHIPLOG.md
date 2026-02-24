@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (12:00 AM) — Interactive Security Playground (/playground)
+**What:** Real-time security testing sandbox at `/playground`. Split-pane editor where you type code on the left and see which SkillAudit rules fire on the right — live, as you type.
+**Features:**
+- **Real-time scanning**: 400ms debounce, scans via `POST /scan/content` as you type. Status indicator shows scanning/idle state.
+- **8 pre-built snippets**: one-click to load realistic attack examples — Data Exfiltration, Prompt Injection, Reverse Shell, Wallet Drainer, Log4Shell, Base64 Hidden Payload, SSTI, and Clean Skill. Each demonstrates different threat categories.
+- **Split-pane UI**: editor on left with syntax-friendly font, character/line counter, tab-to-indent. Findings on right with severity stats bar, expandable finding cards, and capability tags.
+- **Live risk badge**: updates in real-time showing risk level and score as you type.
+- **URL params**: `/playground?snip=drain` loads a specific snippet on page load, making examples shareable.
+**Why:** This is the best possible demo of SkillAudit's detection engine. Instead of "trust us, we have 43 rules" — anyone can type code and see exactly what fires and why. Security researchers can test coverage gaps. Developers can learn which patterns are dangerous. It's interactive education AND marketing. Every snippet is a "holy shit it catches that?" moment. The playground converts skeptics into believers because they can verify the scanner's intelligence with their own eyes.
+
 ## 2026-02-24 (7:00 PM) — 3 New Detection Rules: Wallet Drainer, Env Injection, Log4Shell (43 rules, 401 patterns)
 **What:** 3 new rule categories with 34 patterns covering crypto drainers, environment poisoning, and log injection attacks. Total rules: 40 → 43. Total patterns: 367 → 401. Crossed the 400-pattern mark.
 **New rules:**

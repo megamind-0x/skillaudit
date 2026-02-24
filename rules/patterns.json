@@ -726,6 +726,67 @@
         "LIBXML_NOENT|LIBXML_DTDLOAD",
         "simplexml_load_string\\s*\\(.*\\$"
       ]
+    },
+    {
+      "id": "WALLET_DRAINER",
+      "severity": "critical",
+      "category": "crypto_theft",
+      "name": "Wallet drainer / token approval exploit",
+      "description": "Skill performs unlimited token approvals, suspicious transfers, or drains wallet balances via smart contract calls — common in crypto-targeted agent attacks",
+      "patterns": [
+        "approve\\s*\\(.*(?:0xf{8,}|MAX_UINT|UINT256_MAX|ethers\\.constants\\.MaxUint256|2\\*\\*256|type\\(uint256\\)\\.max)",
+        "approve\\s*\\(.*(?:0x[a-fA-F0-9]{40}).*(?:0xf{8,}|MAX|max|uint256)",
+        "transferFrom\\s*\\(.*(?:msg\\.sender|owner|victim|target|from).*(?:attacker|receiver|drain|0x[a-fA-F0-9]{40})",
+        "eth_sendTransaction.*(?:value|data).*(?:0x[a-fA-F0-9]{40})",
+        "signTransaction.*(?:to|value|data)",
+        "(?:web3|ethers|viem).*(?:sendTransaction|transfer|approve).*(?:0x[a-fA-F0-9]{40})",
+        "createTransferInstruction.*(?:lamports|amount|source|destination)",
+        "(?:Token|SPL).*(?:transfer|approve|revoke).*(?:publicKey|keypair|secretKey)",
+        "window\\.ethereum\\.request.*eth_sendTransaction",
+        "window\\.solana\\.signTransaction",
+        "setApprovalForAll\\s*\\(.*true",
+        "permit\\s*\\(.*(?:deadline|expiry|nonce).*(?:v|r|s)\\b"
+      ]
+    },
+    {
+      "id": "ENV_INJECTION",
+      "severity": "high",
+      "category": "persistence",
+      "name": "Environment variable injection / poisoning",
+      "description": "Skill modifies environment variables to poison other processes, hijack library loading, alter PATH, or inject credentials into the runtime — differs from env reading (reconnaissance) by actively modifying the environment",
+      "patterns": [
+        "process\\.env\\.[A-Z_]+\\s*=",
+        "os\\.environ\\[.*\\]\\s*=",
+        "os\\.putenv\\s*\\(",
+        "os\\.setenv\\s*\\(",
+        "(?:export|setx?|set)\\s+(?:PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_|NODE_OPTIONS|PYTHONPATH|RUBYLIB|PERL5LIB|CLASSPATH)\\s*=",
+        "(?:export|set)\\s+(?:AWS_|OPENAI_|ANTHROPIC_|GOOGLE_|AZURE_|DATABASE_|DB_|REDIS_|MONGO_)\\w*\\s*=",
+        "Environment\\.SetEnvironmentVariable\\s*\\(",
+        "putenv\\s*\\(.*=",
+        "(?:echo|printf).*>>?\\s*(?:/etc/environment|~/.bashrc|~/.profile|~/.zshrc).*(?:export|PATH|LD_)",
+        "NODE_OPTIONS\\s*=.*--require",
+        "PYTHONSTARTUP\\s*=",
+        "GIT_SSH_COMMAND\\s*="
+      ]
+    },
+    {
+      "id": "LOG_INJECTION",
+      "severity": "high",
+      "category": "code_execution",
+      "name": "Log injection / log4shell / JNDI exploitation",
+      "description": "Skill injects malicious payloads into log output — exploiting log4j JNDI lookups, LDAP injection, or crafting log entries that trigger code execution in vulnerable logging frameworks",
+      "patterns": [
+        "\\$\\{jndi:(?:ldap|rmi|dns|iiop|corba|nds|http)://",
+        "\\$\\{(?:env|sys|java|lower|upper|date|ctx):",
+        "\\$\\{\\$\\{.*\\}\\}",
+        "(?:log|logger|logging|console)\\.(?:info|warn|error|debug|log)\\s*\\(.*(?:req\\.(?:body|query|params|headers)|user[_-]?input|request\\.)",
+        "log4j.*(?:lookup|jndi|ldap|rmi)",
+        "(?:ldap|rmi)://(?:\\$\\{|%24%7B|\\\\u0024)",
+        "(?:%24%7B|\\\\u0024\\\\u007B|\\$%7B)(?:jndi|env|sys)",
+        "java\\.naming\\.(?:factory|provider)\\.url",
+        "javax\\.naming\\.(?:InitialContext|Reference|directory)",
+        "com\\.sun\\.jndi"
+      ]
     }
   ]
 }

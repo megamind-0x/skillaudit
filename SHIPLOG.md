@@ -1,5 +1,18 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (7:00 AM) — Visual Scan Comparison Page (/compare)
+**What:** Full visual UI for comparing two skill versions side-by-side at `/compare`. Backs the existing `POST /scan/compare` API with a human-friendly interface.
+**Features:**
+- Two-URL input form with live comparison
+- Side-by-side version cards showing risk level, score, and finding count for old vs new
+- Risk delta badges: "+12 pts" (red) or "-5 pts" (green) with risk level transitions
+- Verdict bar: color-coded summary ("Update INCREASES risk by 12 points. 3 new findings.")
+- New findings section (red): every finding introduced in the new version, expandable with severity badge, rule ID, description, and source line
+- Resolved findings section (green): issues that were fixed in the new version
+- URL parameter support: `/compare?old=URL1&new=URL2` auto-fills and runs the comparison, making results linkable/shareable
+- Responsive dark theme matching the rest of the site
+**Why:** Supply chain attacks are the #1 threat in the agent ecosystem. An attacker gains trust with a clean skill, then pushes a malicious update. The compare API existed but only developers would use it. This page makes version comparison accessible to anyone — paste two URLs, instantly see what changed. It's the "was this update safe?" button. Added link from the landing page footer for discoverability.
+
 ## 2026-02-24 (4:00 AM) — 3 New Detection Rules: Deserialization, SSTI, XXE (40 rules, 367 patterns)
 **What:** 3 new critical-severity rule categories with 34 patterns covering fundamental OWASP vulnerabilities. Total rules: 37 → 40. Total patterns: 333 → 367.
 **New rules:**

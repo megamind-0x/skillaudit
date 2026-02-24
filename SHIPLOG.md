@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (4:00 PM) — Visual Rules Explorer Page (/rules)
+**What:** Interactive page at `/rules` that displays all 40 detection rules organized by 16 categories, with search, severity filtering, and full descriptions.
+**Features:**
+- **Stats bar**: total rules (40), total patterns (367), categories (16), critical rules count
+- **Search**: real-time filter by rule name, ID, description, or category
+- **Severity filter**: buttons for All/Critical/High/Medium — instantly filter the view
+- **Category grouping**: rules organized under labeled categories (Credential Theft, Agent Manipulation, Code Execution, etc.) with icons and rule counts
+- **Rule cards**: each rule shows severity badge, rule ID (monospace), name, pattern count, and full description
+- **Content negotiation**: `/rules` serves the HTML page to browsers, JSON to API clients (via Accept header). New `/rules.json` endpoint for guaranteed JSON access.
+**Also:** Updated sitemap with `/history`, `/compare`, `/rules` pages. Added "Detection Rules" link to landing page footer.
+**Why:** Transparency is the #1 trust signal for a security tool. Users need to know exactly what SkillAudit checks before they trust it with their security pipeline. "We have 40 rules" means nothing without seeing what those rules ARE. Now anyone can browse every rule, understand what it detects, and verify the scanner covers their threat model. This page is the answer to "what does SkillAudit actually check for?" — and it updates automatically as new rules are added.
+
 ## 2026-02-24 (1:00 PM) — Paste-to-Scan Mode + URL Param Auto-Scan on Landing Page
 **What:** Two UX improvements to the landing page that reduce friction for first-time users.
 **Paste tab:**

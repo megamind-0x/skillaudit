@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SkillAudit — Compare Skill Versions</title>
+<meta name="description" content="Compare two versions of an AI agent skill side-by-side. See what changed: new findings, resolved issues, risk delta.">
+<meta property="og:title" content="SkillAudit — Scan Comparison">
+<meta property="og:description" content="Compare two skill versions. Detect supply chain attacks by diffing old vs new.">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f0f23;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;line-height:1.6}
+a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
+.container{max-width:900px;margin:0 auto;padding:1.5rem}
+.header{text-align:center;padding:1.5rem 0 1rem}
+.header h1{font-size:1.5rem;color:#888}.header h1 span{color:#00ff88}
+.header p{color:#555;font-size:0.9rem;margin-top:0.3rem}
+
+/* Form */
+.form-card{background:#111133;border:1px solid #2a2a5a;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+@media(max-width:600px){.form-row{grid-template-columns:1fr}}
+.form-group label{display:block;color:#888;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem}
+.form-group input{width:100%;background:#0a0a1e;border:1px solid #3a3a6a;border-radius:8px;padding:0.7rem 1rem;color:#e0e0e0;font-family:monospace;font-size:0.9rem;outline:none;transition:border-color 0.2s}
+.form-group input:focus{border-color:#00ff88}
+.form-group input::placeholder{color:#444}
+.btn{display:block;width:100%;background:linear-gradient(135deg,#00cc66,#00ff88);color:#000;border:none;border-radius:8px;padding:0.8rem;font-size:1rem;font-weight:700;font-family:monospace;cursor:pointer;transition:transform 0.1s,opacity 0.2s}
+.btn:hover{transform:translateY(-1px)}.btn:active{transform:translateY(0)}
+.btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+
+/* Result */
+#result{display:none}
+.verdict-bar{text-align:center;padding:1.2rem;border-radius:12px;margin-bottom:1.5rem;font-size:1.1rem;font-weight:700}
+.verdict-up{background:#3d0a0a;border:1px solid #ff4444;color:#ff4444}
+.verdict-down{background:#0a3d1a;border:1px solid #00ff88;color:#00ff88}
+.verdict-same{background:#1a1a3e;border:1px solid #888;color:#888}
+
+.delta-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:1rem;margin-bottom:1.5rem;align-items:start}
+@media(max-width:600px){.delta-grid{grid-template-columns:1fr;text-align:center}}
+.version-card{background:#111133;border-radius:12px;padding:1.2rem;border:1px solid #2a2a5a}
+.version-card h3{font-size:0.8rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.8rem}
+.version-card .risk{font-size:1.8rem;font-weight:900;text-transform:uppercase}
+.version-card .meta{font-size:0.85rem;color:#aaa;margin-top:0.5rem}
+.arrow-col{display:flex;align-items:center;justify-content:center;font-size:2rem;color:#555;padding-top:2rem}
+@media(max-width:600px){.arrow-col{padding-top:0;font-size:1.5rem}.arrow-col::after{content:'↓'}.arrow-col span{display:none}}
+
+.delta-badge{display:inline-block;padding:0.2rem 0.8rem;border-radius:6px;font-weight:700;font-size:0.85rem}
+.delta-up{background:#3d0a0a;color:#ff4444}
+.delta-down{background:#0a3d1a;color:#00ff88}
+.delta-flat{background:#1a1a3e;color:#888}
+
+/* Findings sections */
+.findings-section{margin-bottom:1.5rem}
+.findings-section h2{font-size:1rem;padding-bottom:0.5rem;border-bottom:1px solid #2a2a5a;margin-bottom:0.8rem}
+.findings-section.new h2{color:#ff4444}
+.findings-section.resolved h2{color:#00ff88}
+.finding{border-left:3px solid;margin-bottom:0.4rem;background:#111133;border-radius:0 6px 6px 0}
+.finding summary{padding:0.5rem 0.8rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;list-style:none;font-size:0.9rem}
+.finding summary::-webkit-details-marker{display:none}
+.finding summary::before{content:'▸ ';color:#555}
+.finding[open] summary::before{content:'▾ '}
+.finding .detail{padding:0.4rem 0.8rem 0.6rem;border-top:1px solid #1a1a3e;font-size:0.85rem}
+.finding .detail code{display:block;background:#0a0a1e;padding:0.3rem 0.5rem;border-radius:4px;font-size:0.8rem;overflow-x:auto;margin-top:0.3rem}
+.sev-badge{display:inline-block;padding:0.1rem 0.4rem;border-radius:4px;font-size:0.65rem;font-weight:700;text-transform:uppercase;color:#000}
+.rule-id{color:#00ff88;font-weight:700}
+
+.empty{color:#555;font-style:italic;padding:0.5rem 0}
+.error{background:#3d0a0a;border:1px solid #ff4444;color:#ff4444;padding:1rem;border-radius:8px;text-align:center}
+.loading{text-align:center;padding:2rem;color:#888}
+.loading .spinner{display:inline-block;width:20px;height:20px;border:2px solid #333;border-top-color:#00ff88;border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.footer{text-align:center;padding:2rem 0;color:#555;font-size:0.8rem;border-top:1px solid #1a1a3e;margin-top:2rem}
+</style>
+</head><body>
+<div class="container">
+  <div class="header">
+    <h1>🛡️ Skill<span>Audit</span> — Compare</h1>
+    <p>Diff two skill versions. Catch supply chain attacks before they catch you.</p>
+  </div>
+
+  <div class="form-card">
+    <form id="compare-form" onsubmit="runCompare(event)">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Old Version URL</label>
+          <input type="url" id="old-url" placeholder="https://example.com/skill-v1.md" required>
+        </div>
+        <div class="form-group">
+          <label>New Version URL</label>
+          <input type="url" id="new-url" placeholder="https://example.com/skill-v2.md" required>
+        </div>
+      </div>
+      <button type="submit" class="btn" id="compare-btn">Compare Versions</button>
+    </form>
+  </div>
+
+  <div id="loading" style="display:none" class="loading">
+    <div class="spinner"></div>
+    <p style="margin-top:0.5rem">Scanning both versions…</p>
+  </div>
+
+  <div id="error" style="display:none" class="error"></div>
+
+  <div id="result"></div>
+
+  <div class="footer">
+    <a href="/">← Back to SkillAudit</a> · <a href="/docs">API Docs</a><br>
+    Built by <a href="https://moltbook.com/u/Megamind_0x">Megamind_0x</a> 🧠
+  </div>
+</div>
+
+<script>
+const sevColors = { critical:'#ff0044', high:'#ff4444', medium:'#ffaa00', low:'#88ff00', info:'#888' };
+const riskColors = { clean:'#00ff88', low:'#88ff00', moderate:'#ffaa00', high:'#ff4444', critical:'#ff0044' };
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function sevBadge(sev) { return `<span class="sev-badge" style="background:${sevColors[sev]||'#888'}">${esc(sev)}</span>`; }
+
+function renderFinding(f, prefix) {
+  const borderColor = sevColors[f.severity] || '#888';
+  return `<details class="finding" style="border-left-color:${borderColor}">
+    <summary>
+      ${sevBadge(f.severity)}
+      <span class="rule-id">${esc(f.ruleId)}</span>
+      <span>${esc(f.name)}</span>
+      <span style="color:#555;margin-left:auto">line ${f.line}</span>
+    </summary>
+    <div class="detail">
+      <p style="color:#aaa">${esc(f.description)}</p>
+      ${f.lineContent ? `<code>${esc(f.lineContent)}</code>` : ''}
+    </div>
+  </details>`;
+}
+
+function deltaBadge(val, suffix) {
+  if (val > 0) return `<span class="delta-badge delta-up">+${val} ${suffix}</span>`;
+  if (val < 0) return `<span class="delta-badge delta-down">${val} ${suffix}</span>`;
+  return `<span class="delta-badge delta-flat">no change</span>`;
+}
+
+async function runCompare(e) {
+  e.preventDefault();
+  const oldUrl = document.getElementById('old-url').value.trim();
+  const newUrl = document.getElementById('new-url').value.trim();
+  const btn = document.getElementById('compare-btn');
+  const loading = document.getElementById('loading');
+  const errorEl = document.getElementById('error');
+  const resultEl = document.getElementById('result');
+
+  btn.disabled = true; btn.textContent = 'Comparing…';
+  loading.style.display = 'block';
+  errorEl.style.display = 'none';
+  resultEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/scan/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldUrl, newUrl })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    renderResult(data);
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Compare Versions';
+    loading.style.display = 'none';
+  }
+}
+
+function renderResult(d) {
+  const el = document.getElementById('result');
+  const delta = d.scoreDelta;
+  const verdictClass = delta > 0 ? 'verdict-up' : delta < 0 ? 'verdict-down' : 'verdict-same';
+
+  // Old/New cards
+  const oldColor = riskColors[d.oldVersion.riskLevel] || '#888';
+  const newColor = riskColors[d.newVersion.riskLevel] || '#888';
+
+  let html = `
+    <div class="verdict-bar ${verdictClass}">${esc(d.verdict)}</div>
+
+    <div class="delta-grid">
+      <div class="version-card">
+        <h3>Old Version</h3>
+        <div class="risk" style="color:${oldColor}">${esc(d.oldVersion.riskLevel)}</div>
+        <div class="meta">Score: <strong>${d.oldVersion.riskScore}</strong> · Findings: <strong>${d.oldVersion.findingsCount}</strong></div>
+        <div class="meta" style="font-size:0.75rem;color:#555;word-break:break-all;margin-top:0.4rem">${esc(d.oldUrl)}</div>
+      </div>
+      <div class="arrow-col"><span>→</span></div>
+      <div class="version-card">
+        <h3>New Version</h3>
+        <div class="risk" style="color:${newColor}">${esc(d.newVersion.riskLevel)}</div>
+        <div class="meta">Score: <strong>${d.newVersion.riskScore}</strong> · Findings: <strong>${d.newVersion.findingsCount}</strong></div>
+        <div class="meta" style="font-size:0.75rem;color:#555;word-break:break-all;margin-top:0.4rem">${esc(d.newUrl)}</div>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-bottom:1.5rem">
+      ${deltaBadge(d.scoreDelta, 'pts')}
+      ${d.riskChanged ? `<span class="delta-badge ${delta > 0 ? 'delta-up' : 'delta-down'}">${esc(d.oldVersion.riskLevel)} → ${esc(d.newVersion.riskLevel)}</span>` : ''}
+    </div>
+  `;
+
+  // New findings (bad)
+  if (d.newFindings && d.newFindings.count > 0) {
+    html += `<div class="findings-section new">
+      <h2>🔴 New Findings (${d.newFindings.count})</h2>
+      ${d.newFindings.items.map(f => renderFinding(f, 'new')).join('')}
+    </div>`;
+  }
+
+  // Resolved findings (good)
+  if (d.resolvedFindings && d.resolvedFindings.count > 0) {
+    html += `<div class="findings-section resolved">
+      <h2>✅ Resolved Findings (${d.resolvedFindings.count})</h2>
+      ${d.resolvedFindings.items.map(f => renderFinding(f, 'resolved')).join('')}
+    </div>`;
+  }
+
+  if ((!d.newFindings || d.newFindings.count === 0) && (!d.resolvedFindings || d.resolvedFindings.count === 0)) {
+    html += `<p class="empty" style="text-align:center;padding:1rem">No finding differences detected between versions.</p>`;
+  }
+
+  el.innerHTML = html;
+  el.style.display = 'block';
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// URL params support: ?old=...&new=... auto-fills and runs
+(function() {
+  const p = new URLSearchParams(location.search);
+  if (p.get('old')) document.getElementById('old-url').value = p.get('old');
+  if (p.get('new')) document.getElementById('new-url').value = p.get('new');
+  if (p.get('old') && p.get('new')) {
+    runCompare(new Event('submit'));
+  }
+})();
+</script>
+</body></html>

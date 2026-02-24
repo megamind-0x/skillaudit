@@ -1,5 +1,12 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (1:00 AM) — v1.0.0 Release + npm Publish
+**What:** Unified all version numbers to 1.0.0 and published `skillaudit@1.0.0` to npm. SkillAudit is officially production-ready.
+**Version cleanup:** The server reported v0.7.0, scanner v0.8.3, package.json v0.9.0 — all stale from different shipping cycles. Now every component reports 1.0.0: package.json, server `/health`, scanner engine, OpenAPI spec, MCP server, CLI.
+**Published:** `npm publish` → `skillaudit@1.0.0` on npmjs.com. `npx skillaudit` now gets the latest with all 43 rules.
+**What 1.0.0 includes:** 43 detection rules · 401 patterns · 94 tests · 16 threat categories · 10 web pages (landing, docs, integrations, rules, playground, dashboard, compare, history, lattice, reports) · CLI with gate/scan/manifest subcommands · Python SDK · GitHub Action · MCP server · embed widget · webhooks · policies · certificates · badges · threat feed · SARIF export · content hash lookup · scan comparison · batch scanning.
+**Why:** Version numbers are trust signals. v0.7.0 says "beta, use at your own risk." v1.0.0 says "this is production infrastructure, we stand behind it." With 43 rules, 401 patterns, and a full test suite, SkillAudit earned that 1.0. Publishing to npm makes `npx skillaudit` pull the latest version with all the new detection rules. The unified versioning also means the /health endpoint, scan results, SARIF output, and CLI all report the same version — no more confusion about which version someone is running.
+
 ## 2026-02-25 (12:00 AM) — Interactive Security Playground (/playground)
 **What:** Real-time security testing sandbox at `/playground`. Split-pane editor where you type code on the left and see which SkillAudit rules fire on the right — live, as you type.
 **Features:**

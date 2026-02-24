@@ -722,6 +722,7 @@ app.get('/', (req, res) => {
         'GET /dashboard': 'Live threat dashboard — real-time ecosystem security stats, risk trends, flagged domains',
         'GET /docs': 'Interactive API documentation with try-it-out forms and examples',
         'GET /history': 'Scan history & risk trends — visualize how a skill URL risk changes over time with charts and timeline',
+        'GET /playground': 'Interactive security testing sandbox — type code, see which rules fire in real-time',
         'GET /compare': 'Visual scan comparison — diff two skill versions side-by-side, see new/resolved findings and risk delta',
         'GET /integrations': 'Copy-paste integration guides for LangChain, CrewAI, OpenAI, AutoGen, GitHub Actions, MCP, and more',
         'GET /health': 'Health check',
@@ -745,6 +746,10 @@ app.get('/lattice', (req, res) => {
 
 app.get('/history', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'history.html'));
+});
+
+app.get('/playground', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'playground.html'));
 });
 
 app.get('/compare', (req, res) => {

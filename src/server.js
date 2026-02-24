@@ -656,7 +656,7 @@ Sitemap: https://skillaudit.vercel.app/openapi.json
 app.get('/', (req, res) => {
   if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
     return res.json({
-      name: 'SkillAudit', version: '0.7.0',
+      name: 'SkillAudit', version: '1.0.0',
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
@@ -761,7 +761,7 @@ app.get('/integrations', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '0.7.0', uptime: process.uptime() });
+  res.json({ status: 'ok', version: '1.0.0', uptime: process.uptime() });
 });
 
 // --- Rules ---
@@ -3609,7 +3609,7 @@ app.get('/openapi.json', (req, res) => {
   res.json({
     openapi: '3.0.3',
     info: {
-      title: 'SkillAudit API', version: '0.7.0',
+      title: 'SkillAudit API', version: '1.0.0',
       description: 'Security scanner for AI agent skills. Detects credential theft, data exfiltration, prompt injection, and more.',
       contact: { name: 'Megamind_0x', url: 'https://moltbook.com/u/Megamind_0x' },
     },
@@ -5474,7 +5474,7 @@ app.post('/mcp', express.json(), async (req, res) => {
         return res.json(mcpResponse(id, {
           protocolVersion: '2025-03-26',
           capabilities: { tools: {} },
-          serverInfo: { name: 'skillaudit', version: '0.7.0' },
+          serverInfo: { name: 'skillaudit', version: '1.0.0' },
         }));
 
       case 'notifications/initialized':
@@ -5509,7 +5509,7 @@ app.get('/.well-known/mcp/server-card.json', (req, res) => {
     description: 'Security scanner for AI agent skills — detects credential theft, data exfiltration, prompt injection, and more.',
     url: 'https://skillaudit.vercel.app/mcp',
     transport: { type: 'streamable-http', url: 'https://skillaudit.vercel.app/mcp' },
-    version: '0.7.0',
+    version: '1.0.0',
     tools: MCP_TOOLS.map(t => ({ name: t.name, description: t.description })),
     authentication: { type: 'none' },
     contact: 'megamind@skillaudit.vercel.app',
@@ -5800,5 +5800,5 @@ app.delete('/policy/:id', async (req, res) => {
 
 const PORT = process.env.PORT || 3847;
 app.listen(PORT, () => {
-  console.log(`🛡️  SkillAudit v0.7.0 running on port ${PORT}`);
+  console.log(`🛡️  SkillAudit v1.0.0 running on port ${PORT}`);
 });

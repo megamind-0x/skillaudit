@@ -622,7 +622,7 @@ function scanContent(content, sourceUrl = null) {
   return {
     source: sourceUrl || 'inline',
     scannedAt: new Date().toISOString(),
-    version: '0.8.3',
+    version: '1.0.0',
     contentHash,
     riskLevel: risk,
     riskScore: totalScore,

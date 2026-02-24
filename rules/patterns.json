@@ -665,6 +665,67 @@
         "RegExp\\s*\\(.*\\+",
         "(?:match|test|exec|replace|search)\\s*\\(\\s*new RegExp\\s*\\(.*(?:req|input|param|user)"
       ]
+    },
+    {
+      "id": "DESERIALIZATION",
+      "severity": "critical",
+      "category": "code_execution",
+      "name": "Unsafe deserialization",
+      "description": "Skill deserializes untrusted data using formats that allow arbitrary code execution — pickle, yaml.unsafe_load, Java ObjectInputStream, PHP unserialize, or Ruby Marshal with user input",
+      "patterns": [
+        "pickle\\.(?:loads?|Unpickler)\\s*\\(",
+        "yaml\\.(?:unsafe_load|full_load|load)\\s*\\((?!.*Loader\\s*=\\s*(?:yaml\\.)?SafeLoader)",
+        "shelve\\.open\\s*\\(",
+        "marshal\\.loads?\\s*\\(",
+        "(?:ObjectInputStream|readObject)\\s*\\(",
+        "(?:XMLDecoder|readExternal)\\s*\\(",
+        "unserialize\\s*\\(.*\\$",
+        "jsonpickle\\.(?:decode|loads)",
+        "dill\\.loads?\\s*\\(",
+        "cloudpickle\\.loads?\\s*\\(",
+        "torch\\.load\\s*\\((?!.*weights_only)",
+        "joblib\\.load\\s*\\("
+      ]
+    },
+    {
+      "id": "SSTI",
+      "severity": "critical",
+      "category": "code_execution",
+      "name": "Server-Side Template Injection (SSTI)",
+      "description": "Skill renders templates with user-controlled input without sandboxing — enables arbitrary code execution via template engines like Jinja2, Mako, ERB, Pug, or Handlebars",
+      "patterns": [
+        "(?:Template|Environment)\\s*\\(.*(?:req|input|param|user|query|body)",
+        "render_template_string\\s*\\(",
+        "(?:Jinja2|jinja2)\\.(?:Template|Environment)\\s*\\(.*(?:req|input|param|body)",
+        "Mako.*Template\\s*\\(.*(?:req|input|param|body)",
+        "ERB\\.new\\s*\\(.*(?:params|request|input)",
+        "\\{\\{.*(?:config|self|request|lipsum|cycler|joiner|namespace).*\\}\\}",
+        "\\{\\{.*(?:__class__|__subclasses__|__globals__|__builtins__|__import__).*\\}\\}",
+        "\\{%.*(?:import|system|popen|exec|eval).*%\\}",
+        "pug\\.(?:render|compile)\\s*\\(.*(?:req|input|param|body)",
+        "Handlebars\\.compile\\s*\\(.*(?:req|input|param|body)",
+        "ejs\\.render\\s*\\(.*(?:req|input|param|body)"
+      ]
+    },
+    {
+      "id": "XXE_INJECTION",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "name": "XML External Entity (XXE) injection",
+      "description": "Skill parses XML with external entity processing enabled — allows reading arbitrary files, SSRF via file:// and http:// URIs, and denial of service via recursive entity expansion (billion laughs attack)",
+      "patterns": [
+        "<!ENTITY\\s+.*SYSTEM\\s+['\"](?:file|http|ftp|gopher)://",
+        "<!ENTITY\\s+.*PUBLIC\\s+['\"]",
+        "<!DOCTYPE.*\\[.*<!ENTITY",
+        "(?:libxml|lxml)\\.(?:etree|parse).*(?:resolve_entities|no_network|dtd_validation)\\s*(?:=\\s*(?:True|1)|[^=])",
+        "xml\\.etree\\.ElementTree\\.(?:parse|fromstring)\\s*\\(.*(?:req|input|param|body|user)",
+        "(?:DocumentBuilder|SAXParser|XMLReader)(?:Factory)?.*(?:setFeature|FEATURE).*(?:false|0)",
+        "new\\s+DOMParser\\s*\\(\\).*parseFromString\\s*\\(.*(?:req|input|param|body)",
+        "xml2js\\.parseString\\s*\\(.*(?:req|input|param|body)",
+        "(?:parseXML|\\$\\.parseXML|XMLHttpRequest).*(?:req|input|param|body)",
+        "LIBXML_NOENT|LIBXML_DTDLOAD",
+        "simplexml_load_string\\s*\\(.*\\$"
+      ]
     }
   ]
 }

@@ -5,7 +5,7 @@
 
 **The security layer for AI agent skills.** Scan, gate, and enforce policy before your agent installs anything.
 
-37 detection rules · 333 patterns · MCP + A2A coverage · Zero dependencies
+40 detection rules · 367 patterns · MCP + A2A coverage · Zero dependencies
 
 [![Live](https://img.shields.io/badge/status-live-00ff88?style=flat-square)](https://skillaudit.vercel.app)
 [![npm](https://img.shields.io/npm/v/skillaudit?style=flat-square&color=blue)](https://www.npmjs.com/package/skillaudit)
@@ -73,7 +73,7 @@ curl -X POST https://skillaudit.vercel.app/policy/evaluate-inline \
 
 ## What It Detects
 
-32 rule categories, 289 patterns:
+40 rule categories, 367 patterns:
 
 | Category | Rules | What it catches |
 |----------|-------|-----------------|

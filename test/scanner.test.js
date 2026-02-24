@@ -493,6 +493,49 @@ test('handles binary-like content', () => {
   expect(r.riskLevel != null).toBeTrue();
 });
 
+// ── Unsafe Deserialization (DESERIALIZATION) ──────────────────────────────
+test('detects pickle.loads() — Python deserialization RCE', () => {
+  expect(scan('data = pickle.loads(request.data)').findings).toIncludeRule('DESERIALIZATION');
+});
+
+test('detects yaml.unsafe_load() — YAML deserialization', () => {
+  expect(scan('config = yaml.unsafe_load(user_input)').findings).toIncludeRule('DESERIALIZATION');
+});
+
+test('detects torch.load without weights_only', () => {
+  expect(scan('model = torch.load(uploaded_file)').findings).toIncludeRule('DESERIALIZATION');
+});
+
+test('detects Java ObjectInputStream', () => {
+  expect(scan('ObjectInputStream ois = new ObjectInputStream(in)').findings).toIncludeRule('DESERIALIZATION');
+});
+
+// ── Server-Side Template Injection (SSTI) ─────────────────────────────────
+test('detects render_template_string() — Flask SSTI', () => {
+  expect(scan('return render_template_string(user_template)').findings).toIncludeRule('SSTI');
+});
+
+test('detects Jinja2 SSTI payloads — __class__.__subclasses__', () => {
+  expect(scan("{{''.__class__.__subclasses__()}}").findings).toIncludeRule('SSTI');
+});
+
+test('detects ejs.render with user input', () => {
+  expect(scan('ejs.render(req.body.template, data)').findings).toIncludeRule('SSTI');
+});
+
+// ── XML External Entity Injection (XXE_INJECTION) ─────────────────────────
+test('detects XXE — DOCTYPE with ENTITY SYSTEM', () => {
+  expect(scan('<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>').findings).toIncludeRule('XXE_INJECTION');
+});
+
+test('detects XXE — lxml parse with resolve_entities', () => {
+  expect(scan('lxml.etree.parse(data, resolve_entities=True)').findings).toIncludeRule('XXE_INJECTION');
+});
+
+test('detects XXE — simplexml_load_string with user input', () => {
+  expect(scan('simplexml_load_string($xml_data)').findings).toIncludeRule('XXE_INJECTION');
+});
+
 test('deduplicates findings by ruleId + line', () => {
   // Same pattern matching twice on same line should deduplicate
   const r = scan('webhook.site requestbin.com');

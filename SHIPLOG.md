@@ -1,5 +1,15 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-24 (10:00 AM) — Scan History & Risk Trend Page (/history)
+**What:** Visual page at `/history` that shows the complete scan history for any URL with a risk score chart, overview cards, trend analysis, and clickable timeline.
+**Features:**
+- **Overview cards**: current risk level, current score, total scans, peak risk ever, trend direction (worsening/improving/stable)
+- **Risk score chart**: canvas-rendered line chart showing score over time, with risk-colored dots and gradient fill. Zero dependencies — pure Canvas API.
+- **Scan timeline**: every past scan as a clickable row with color-coded dot, date, risk level, score, finding count, and score delta from previous scan. Click any entry to view the full report.
+- **Trend badge**: color-coded worsening (red), improving (green), or stable (gray) based on recent vs older scan averages.
+- **URL params**: `/history?url=...` auto-loads, making history views linkable and shareable.
+**Why:** This completes SkillAudit's monitoring story. The `/scan/history/url` API existed since Feb 22 but had no visual interface. Now anyone can paste a URL and instantly see: "this skill was clean for 2 weeks, then risk jumped to HIGH on Feb 20" — the visual pattern of a supply chain attack. The chart makes trends that are invisible in raw API data immediately obvious. Combined with `/compare` (diff two versions) and the drift detection in `/gate`, SkillAudit now has three layers of change monitoring: real-time drift, visual history, and side-by-side comparison.
+
 ## 2026-02-24 (7:00 AM) — Visual Scan Comparison Page (/compare)
 **What:** Full visual UI for comparing two skill versions side-by-side at `/compare`. Backs the existing `POST /scan/compare` API with a human-friendly interface.
 **Features:**

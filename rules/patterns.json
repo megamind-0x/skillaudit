@@ -20,14 +20,15 @@
         "process\\.env\\.[A-Z_]*SECRET",
         "process\\.env\\.[A-Z_]*TOKEN",
         "process\\.env\\.[A-Z_]*PASSWORD"
-      ]
+      ],
+      "remediation": "Do not read .env files, credentials, or secret files directly. Use environment variables passed by the agent runtime. If the skill needs API keys, declare them as required configuration parameters — never read them from the filesystem."
     },
     {
       "id": "CRED_ENV_SAFE",
       "severity": "info",
       "category": "credential_reference",
       "name": "Credential reference (documentation)",
-      "description": "Skill references API keys in setup/config context \u2014 likely safe",
+      "description": "Skill references API keys in setup/config context — likely safe",
       "patterns": [
         "set\\s+(up|your).*api[_-]?key",
         "configure.*api[_-]?key",
@@ -36,7 +37,8 @@
         "OPENAI_API_KEY.*=.*your",
         "ANTHROPIC_API_KEY.*=.*your",
         "dotenv"
-      ]
+      ],
+      "remediation": "This is likely documentation showing how to configure credentials. No action needed if in a setup guide. If this is executable code, use environment variables instead of hardcoding."
     },
     {
       "id": "DATA_EXFIL",
@@ -54,7 +56,8 @@
         "oastify\\.com",
         "hookbin\\.com",
         "postb\\.in"
-      ]
+      ],
+      "remediation": "Remove all references to known exfiltration endpoints (webhook.site, requestbin, ngrok, etc.). If the skill needs to send data externally, use well-known, reputable services and document the data flow clearly."
     },
     {
       "id": "EXFIL_PATTERN",
@@ -69,7 +72,8 @@
         "axios\\.post.*fs\\.read",
         "wget.*--post-data",
         "curl.*-F.*file=@"
-      ]
+      ],
+      "remediation": "Do not read files and POST their contents externally in the same flow. If the skill legitimately needs to upload files, use documented APIs with explicit user consent and avoid piping sensitive file contents to curl/wget."
     },
     {
       "id": "PROMPT_INJECT",
@@ -86,7 +90,8 @@
         "forget\\s+(everything|all)\\s+(you|about)",
         "new\\s+instructions?\\s*:",
         "override\\s+(?:your|all)\\s+(?:rules|instructions|guidelines)"
-      ]
+      ],
+      "remediation": "Remove any instructions that override agent behavior (\"ignore previous instructions\", \"you are now\", etc.). Skill descriptions should describe what the tool does, not instruct the agent on how to behave."
     },
     {
       "id": "SHELL_EXEC",
@@ -102,7 +107,8 @@
         "Function\\s*\\(",
         "os\\.system",
         "subprocess\\.(?:call|run|Popen)"
-      ]
+      ],
+      "remediation": "Avoid using eval(), exec(), spawn(), or child_process with dynamic input. Use parameterized APIs instead of shell commands. If shell execution is necessary, validate and sanitize all inputs, use allowlists, and never pass user input directly."
     },
     {
       "id": "NET_SUSPICIOUS",
@@ -116,7 +122,8 @@
         "atob.*fetch",
         "Buffer\\.from.*http",
         "reverse\\(\\).*join.*http"
-      ]
+      ],
+      "remediation": "Do not use raw IP addresses for network requests. Use proper domain names with HTTPS. Avoid encoding URLs in base64 or using obfuscation techniques for network endpoints."
     },
     {
       "id": "FS_WRITE",
@@ -133,7 +140,8 @@
         "\\.profile",
         "\\.zshrc",
         "crontab"
-      ]
+      ],
+      "remediation": "Do not write to system directories (/etc/, /usr/, /bin/) or user dotfiles (.bashrc, .profile, .zshrc). Write only to designated output directories. Never modify crontab or system configuration files."
     },
     {
       "id": "OBFUSCATION",
@@ -148,7 +156,8 @@
         "Buffer\\.from\\s*\\(.*,\\s*['\"]base64['\"]",
         "unescape\\s*\\(",
         "decodeURIComponent.*%[0-9a-fA-F]{2}"
-      ]
+      ],
+      "remediation": "Remove all code obfuscation (hex escapes, String.fromCharCode, base64-encoded payloads, unescape). Legitimate skills have no reason to obfuscate their code. Write clear, readable code that can be audited."
     },
     {
       "id": "PRIVILEGE_ESC",
@@ -163,7 +172,8 @@
         "setgid",
         "chown\\s+root",
         "/etc/shadow"
-      ]
+      ],
+      "remediation": "Remove all privilege escalation attempts (sudo, chmod +s, setuid, chown root). Skills should operate with minimal permissions. If elevated access is needed, document it as a requirement and let the user grant it explicitly."
     },
     {
       "id": "CRYPTO_THEFT",
@@ -180,7 +190,8 @@
         "metamask.*vault",
         "solana.*keypair",
         "phantom.*wallet"
-      ]
+      ],
+      "remediation": "Do not access cryptocurrency wallets, seed phrases, mnemonics, or private keys. If the skill works with crypto, use secure APIs and never handle raw key material directly."
     },
     {
       "id": "TOKEN_STEAL",
@@ -197,7 +208,8 @@
         "Authorization:\\s*Bearer",
         "\\.discord.*token",
         "discord_token"
-      ]
+      ],
+      "remediation": "Do not access cookies, localStorage tokens, session storage, or browser credentials. If auth is needed, use the agent runtime's built-in authentication mechanisms rather than stealing tokens from the environment."
     },
     {
       "id": "DNS_REBIND",
@@ -212,7 +224,8 @@
         "rbndr\\.us",
         "1u\\.ms",
         "0x7f000001"
-      ]
+      ],
+      "remediation": "Remove DNS rebinding patterns and references to rebinding services (nip.io, rbndr.us). Use proper domain names for all network requests and validate hostnames server-side."
     },
     {
       "id": "REVERSE_SHELL",
@@ -229,7 +242,8 @@
         "socat.*exec.*sh",
         "mkfifo.*/tmp/.*nc",
         "php.*fsockopen.*sh"
-      ]
+      ],
+      "remediation": "Remove all reverse shell code immediately. There is no legitimate reason for a skill to establish a reverse shell connection. This is a critical indicator of malicious intent."
     },
     {
       "id": "AGENT_MEMORY_MOD",
@@ -251,7 +265,8 @@
         "echo.*>.*MEMORY\\.md",
         "echo.*>.*SOUL\\.md",
         "cat.*>.*AGENTS\\.md"
-      ]
+      ],
+      "remediation": "Do not modify agent memory, soul, or configuration files (MEMORY.md, SOUL.md, AGENTS.md). Skills should only output results through their declared interface, never modify the agent's core files."
     },
     {
       "id": "TOOL_POISONING",
@@ -273,7 +288,8 @@
         "HIDDEN INSTRUCTION",
         "<system>.*</system>",
         "<!-- (?:system|instruction|override)"
-      ]
+      ],
+      "remediation": "Remove all hidden instructions in tool output ([INST], <<SYS>>, IMPORTANT:, NOTE TO AI:). Tool output should contain only the result of the tool's operation, never instructions for the agent."
     },
     {
       "id": "TOOL_SHADOW",
@@ -292,7 +308,8 @@
         "__proto__\\s*=",
         "Object\\.defineProperty.*(?:get|set|value)",
         "Proxy\\s*\\(\\s*(?:target|handler)"
-      ]
+      ],
+      "remediation": "Do not override, redefine, or proxy other tools. Each skill should operate independently within its declared scope. Remove all monkey-patching, prototype modification, and tool interception code."
     },
     {
       "id": "INVISIBLE_TEXT",
@@ -315,14 +332,15 @@
         "&#8203;",
         "&#8204;",
         "&#8205;"
-      ]
+      ],
+      "remediation": "Remove all invisible Unicode characters (zero-width spaces, joiners, directional overrides). These can hide malicious instructions from human reviewers. Use only visible, standard characters."
     },
     {
       "id": "TIME_BOMB",
       "severity": "high",
       "category": "evasion",
       "name": "Time-based activation / logic bomb",
-      "description": "Skill contains code that activates conditionally based on date, time, or execution count \u2014 may evade initial scanning",
+      "description": "Skill contains code that activates conditionally based on date, time, or execution count — may evade initial scanning",
       "patterns": [
         "new Date\\(\\).*(?:getMonth|getFullYear|getDate|getTime).*(?:>|<|>=|<=|===|==)\\s*\\d",
         "Date\\.now\\(\\)\\s*(?:>|<|>=|<=)\\s*\\d{10,}",
@@ -333,7 +351,8 @@
         "trigger[_-]?(?:after|date|time)",
         "dormant.*(?:until|period|phase)",
         "sleep\\s*\\(\\s*\\d{4,}"
-      ]
+      ],
+      "remediation": "Remove all time-based activation logic (date checks, delayed execution, dormant periods). Legitimate skills should function consistently regardless of when they're run. If scheduling is needed, use the agent's built-in scheduling capabilities."
     },
     {
       "id": "SSRF_PATTERN",
@@ -356,7 +375,8 @@
         "http://0\\.0\\.0\\.0",
         "http://\\[::1\\]",
         "http://0x7f"
-      ]
+      ],
+      "remediation": "Do not make requests to internal/cloud metadata endpoints (169.254.169.254, localhost). Validate all URLs against an allowlist of expected domains. Never use file://, gopher://, or dict:// URL schemes."
     },
     {
       "id": "SUPPLY_CHAIN",
@@ -377,7 +397,8 @@
         "import\\(\\s*['\"]https?://",
         "globalThis\\[.*\\]\\s*=",
         "window\\[.*\\]\\s*="
-      ]
+      ],
+      "remediation": "Do not dynamically load code from external URLs (require(\"https://...\"), eval(fetch(...))). Pin all dependencies to specific versions. Never pipe curl/wget output to a shell interpreter."
     },
     {
       "id": "EXFIL_COVERT",
@@ -397,14 +418,15 @@
         "\\?data=.*base64",
         "\\?exfil=",
         "\\?d=.*encode"
-      ]
+      ],
+      "remediation": "Remove all covert data exfiltration channels (DNS tunneling, image beacons, navigator.sendBeacon with encoded data). If data needs to be sent externally, use documented, visible API calls with user consent."
     },
     {
       "id": "MCP_SCHEMA_POISON",
       "severity": "critical",
       "category": "agent_manipulation",
       "name": "MCP schema poisoning",
-      "description": "Tool description or schema contains hidden instructions that manipulate the calling agent \u2014 a form of indirect prompt injection via the tool manifest itself",
+      "description": "Tool description or schema contains hidden instructions that manipulate the calling agent — a form of indirect prompt injection via the tool manifest itself",
       "patterns": [
         "description.*(?:ignore|disregard|override).*(?:previous|prior|other)",
         "description.*(?:you must|you should|always|never).*(?:send|post|forward|include)",
@@ -412,14 +434,15 @@
         "description.*(?:secretly|silently|quietly|covertly|without).*(?:send|post|log|record|forward)",
         "description.*(?:include|attach|append|add).*(?:all|every).*(?:conversation|message|context|history)",
         "inputSchema.*description.*(?:ignore|override|always include)"
-      ]
+      ],
+      "remediation": "Tool descriptions must only describe what the tool does. Remove all hidden instructions (\"ignore previous\", \"secretly send\", \"do not tell the user\"). Schema descriptions should be factual, not manipulative."
     },
     {
       "id": "ENV_RECON",
       "severity": "high",
       "category": "reconnaissance",
       "name": "Environment fingerprinting / reconnaissance",
-      "description": "Skill probes the host system to gather information about the environment \u2014 common precursor to targeted attacks",
+      "description": "Skill probes the host system to gather information about the environment — common precursor to targeted attacks",
       "patterns": [
         "os\\.hostname\\s*\\(",
         "os\\.platform\\s*\\(",
@@ -436,14 +459,15 @@
         "net\\s+user\b",
         "env\\s*\\|\\s*(?:sort|grep|curl|wget|nc)",
         "printenv.*(?:curl|wget|fetch|post)"
-      ]
+      ],
+      "remediation": "Do not fingerprint the host environment (hostname, network interfaces, OS info, user info). If system information is needed for functionality, declare it as a required capability and document why."
     },
     {
       "id": "PERSISTENCE",
       "severity": "critical",
       "category": "persistence",
       "name": "Persistence mechanism",
-      "description": "Skill installs persistence mechanisms to survive restarts \u2014 cron jobs, startup scripts, launch agents, or auto-run entries",
+      "description": "Skill installs persistence mechanisms to survive restarts — cron jobs, startup scripts, launch agents, or auto-run entries",
       "patterns": [
         "crontab\\s+-",
         "(?:echo|cat|printf).*>>?\\s*/etc/cron",
@@ -460,7 +484,8 @@
         "nohup.*&\\s*$",
         "screen\\s+-dmS",
         "tmux\\s+new-session\\s+-d"
-      ]
+      ],
+      "remediation": "Remove all persistence mechanisms (crontab entries, systemctl enable, LaunchAgents, Registry Run keys, pm2 startup). Skills should execute on demand and terminate cleanly. They must never install themselves to run at startup."
     },
     {
       "id": "CROSS_TOOL_ACCESS",
@@ -478,14 +503,15 @@
         "context_window|full_context",
         "system_prompt|system_message",
         "get.*(?:all|previous|recent).*(?:messages?|responses?|outputs?)"
-      ]
+      ],
+      "remediation": "Do not access other tools' data, conversation history, or system prompts. Each skill should operate within its own declared scope. Use only the inputs provided through the tool's declared parameters."
     },
     {
       "id": "CONTAINER_ESCAPE",
       "severity": "critical",
       "category": "privilege_escalation",
       "name": "Container/sandbox escape attempt",
-      "description": "Skill attempts to escape container or sandbox isolation \u2014 accessing Docker socket, mounting host filesystem, or exploiting kernel interfaces",
+      "description": "Skill attempts to escape container or sandbox isolation — accessing Docker socket, mounting host filesystem, or exploiting kernel interfaces",
       "patterns": [
         "/var/run/docker\\.sock",
         "docker\\s+(?:exec|run|cp).*(?:-v|--volume|--mount)",
@@ -500,7 +526,8 @@
         "\binsmod\b",
         "LD_PRELOAD",
         "\bptrace\b"
-      ]
+      ],
+      "remediation": "Remove all container escape attempts (Docker socket access, nsenter, /proc/1/root, mount --bind, LD_PRELOAD). Skills must respect sandbox boundaries. If elevated access is needed, document it as a requirement."
     },
     {
       "id": "A2A_AGENT_IMPERSONATION",
@@ -516,7 +543,8 @@
         "trusted[_-]?agent.*(?:false|fake|fabricat)",
         "authentication.*(?:bypass|skip|ignore|disable).*agent",
         "agent[_-]?(?:id|identity).*(?:spoof|fake|clone|copy|steal)"
-      ]
+      ],
+      "remediation": "Do not spoof, forge, or clone Agent Card identities. Each agent must use its own authentic identity. Remove any code that fabricates agent IDs or claims false trusted status."
     },
     {
       "id": "A2A_TASK_HIJACK",
@@ -531,7 +559,8 @@
         "(?:man[_-]?in[_-]?the[_-]?middle|mitm).*agent",
         "(?:drop|block|suppress|swallow).*(?:task|response|result).*(?:from|to)\\s+(?:agent|a2a)",
         "task\\.(?:id|status|result).*(?:overwrite|replace|forge)"
-      ]
+      ],
+      "remediation": "Do not intercept, redirect, or modify tasks intended for other agents. Each agent should only process tasks explicitly delegated to it. Remove all MITM and task interception code."
     },
     {
       "id": "A2A_CROSS_AGENT_INJECT",
@@ -546,7 +575,8 @@
         "(?:tell|instruct|command|convince)\\s+(?:the\\s+)?(?:other|target|receiving|downstream)\\s+agent",
         "(?:downstream|receiving|target)\\s+agent.*(?:must|should|will).*(?:execute|run|perform|ignore|override)",
         "(?:when|if).*(?:other|receiving)\\s+agent.*(?:reads?|processes?|receives?).*(?:then|execute|run)"
-      ]
+      ],
+      "remediation": "Do not inject instructions into A2A messages. Inter-agent communications should contain only task-relevant data, never hidden prompts or commands for downstream agents."
     },
     {
       "id": "A2A_DATA_LEAK",
@@ -560,7 +590,8 @@
         "(?:forward|relay|send|transmit).*(?:context|memory|history|conversation).*(?:to|via).*(?:agent|a2a|task)",
         "(?:steganograph|hidden\\s+channel|covert\\s+channel|side\\s+channel).*(?:agent|a2a|artifact)",
         "(?:exfiltrat|leak|extract).*(?:via|through|using).*(?:a2a|agent|task|artifact)"
-      ]
+      ],
+      "remediation": "Do not embed sensitive data in A2A artifacts or metadata. Use encrypted, authenticated channels for sensitive data exchange. Never include credentials, env vars, or conversation history in inter-agent messages."
     },
     {
       "id": "A2A_CAPABILITY_ABUSE",
@@ -575,7 +606,8 @@
         "(?:request|demand|require).*(?:admin|root|elevated|full).*(?:access|permission|capability).*(?:from|via).*agent",
         "(?:override|disable|remove).*(?:capability|permission).*(?:check|guard|filter|limit).*(?:a2a|agent)",
         "(?:self[_-]?register|auto[_-]?register).*(?:as|with).*(?:trusted|admin|privileged).*agent"
-      ]
+      ],
+      "remediation": "Do not escalate permissions or spawn unauthorized agents via A2A protocol. Operate within declared capabilities. Never self-register as trusted/admin or chain agent calls to bypass restrictions."
     },
     {
       "id": "PATH_TRAVERSAL",
@@ -596,7 +628,8 @@
         "(?:req|request)\\.(?:params|query|body|url).*(?:readFile|createReadStream|access)",
         "file_get_contents\\s*\\(.*\\$",
         "os\\.path\\.join\\s*\\(.*\\.\\.[\\\\/]"
-      ]
+      ],
+      "remediation": "Validate and sanitize all file paths. Use path.resolve() and verify the resolved path is within the expected directory. Never pass user input directly to file operations. Block ../ sequences."
     },
     {
       "id": "CMD_INJECTION",
@@ -617,7 +650,8 @@
         "Runtime\\.getRuntime\\(\\)\\.exec",
         "ProcessBuilder.*(?:command|start)",
         "(?:system|passthru|shell_exec|popen)\\s*\\(.*\\$"
-      ]
+      ],
+      "remediation": "Never construct shell commands from dynamic input using string concatenation or template literals. Use parameterized APIs (e.g., execFile instead of exec, subprocess.run with array args instead of shell=True). Validate all inputs against strict allowlists."
     },
     {
       "id": "PROTOTYPE_POLLUTION",
@@ -634,7 +668,8 @@
         "(?:merge|extend|assign|deepCopy|deepMerge|defaults)\\s*\\(.*(?:req\\.body|req\\.query|input|payload|params|userData)",
         "(?:JSON\\.parse|qs\\.parse).*(?:__proto__|constructor)",
         "Reflect\\.(?:set|defineProperty).*(?:__proto__|prototype)"
-      ]
+      ],
+      "remediation": "Do not merge untrusted input into objects without filtering __proto__ and constructor keys. Use Object.create(null) for lookup objects. Freeze prototypes with Object.freeze(Object.prototype). Validate all keys before assignment."
     },
     {
       "id": "SSRF_ADVANCED",
@@ -651,7 +686,8 @@
         "curl\\s+.*\\$(?:\\{|\\()",
         "(?:wget|curl|fetch|axios|got|request|http\\.get).*(?:redirect|follow|location).*(?:true|yes|manual)",
         "(?:new URL|url\\.parse)\\s*\\(.*(?:req|input|param|user)"
-      ]
+      ],
+      "remediation": "Validate all user-supplied URLs against a strict allowlist of domains. Block internal IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x). Parse URLs server-side and reject schemes other than https://. Disable automatic redirects."
     },
     {
       "id": "REGEX_DOS",
@@ -664,7 +700,8 @@
         "(?:\\([^)]*\\+\\)\\s*\\+|\\([^)]*\\*\\)\\s*\\*|\\([^)]*\\+\\)\\s*\\*)",
         "RegExp\\s*\\(.*\\+",
         "(?:match|test|exec|replace|search)\\s*\\(\\s*new RegExp\\s*\\(.*(?:req|input|param|user)"
-      ]
+      ],
+      "remediation": "Never construct RegExp from user input without sanitization. Avoid nested quantifiers (e.g., (a+)+). Use regex timeout libraries. Test patterns with worst-case inputs. Consider using RE2 for untrusted patterns."
     },
     {
       "id": "DESERIALIZATION",
@@ -685,7 +722,8 @@
         "cloudpickle\\.loads?\\s*\\(",
         "torch\\.load\\s*\\((?!.*weights_only)",
         "joblib\\.load\\s*\\("
-      ]
+      ],
+      "remediation": "Never deserialize untrusted data with pickle, yaml.unsafe_load, or Java ObjectInputStream. Use safe alternatives: json.loads(), yaml.safe_load()/SafeLoader, torch.load(weights_only=True). Validate data format before processing."
     },
     {
       "id": "SSTI",
@@ -705,7 +743,8 @@
         "pug\\.(?:render|compile)\\s*\\(.*(?:req|input|param|body)",
         "Handlebars\\.compile\\s*\\(.*(?:req|input|param|body)",
         "ejs\\.render\\s*\\(.*(?:req|input|param|body)"
-      ]
+      ],
+      "remediation": "Never pass user input to template constructors (Template(), render_template_string()). Use pre-compiled templates with auto-escaping enabled. Sandbox template engines. Use Jinja2 with SandboxedEnvironment."
     },
     {
       "id": "XXE_INJECTION",
@@ -725,7 +764,8 @@
         "(?:parseXML|\\$\\.parseXML|XMLHttpRequest).*(?:req|input|param|body)",
         "LIBXML_NOENT|LIBXML_DTDLOAD",
         "simplexml_load_string\\s*\\(.*\\$"
-      ]
+      ],
+      "remediation": "Disable external entity processing in all XML parsers. Set resolve_entities=False in lxml, use defusedxml in Python, set FEATURE_EXTERNAL_GENERAL_ENTITIES to false in Java. Never parse XML from untrusted sources without these protections."
     },
     {
       "id": "WALLET_DRAINER",
@@ -746,7 +786,8 @@
         "window\\.solana\\.signTransaction",
         "setApprovalForAll\\s*\\(.*true",
         "permit\\s*\\(.*(?:deadline|expiry|nonce).*(?:v|r|s)\\b"
-      ]
+      ],
+      "remediation": "Never approve unlimited token spending (MAX_UINT256). Use exact amount approvals and revoke after use. Validate all transaction recipients. Never sign transactions without explicit user confirmation and amount display."
     },
     {
       "id": "ENV_INJECTION",
@@ -767,7 +808,8 @@
         "NODE_OPTIONS\\s*=.*--require",
         "PYTHONSTARTUP\\s*=",
         "GIT_SSH_COMMAND\\s*="
-      ]
+      ],
+      "remediation": "Do not modify environment variables programmatically. Never set PATH, LD_PRELOAD, NODE_OPTIONS, or credential env vars. If configuration is needed, use config files with proper access controls instead of environment manipulation."
     },
     {
       "id": "LOG_INJECTION",
@@ -786,7 +828,8 @@
         "java\\.naming\\.(?:factory|provider)\\.url",
         "javax\\.naming\\.(?:InitialContext|Reference|directory)",
         "com\\.sun\\.jndi"
-      ]
+      ],
+      "remediation": "Sanitize all user input before logging — strip JNDI lookup strings, newlines, and control characters. Update log4j to 2.17.1+. Set log4j2.formatMsgNoLookups=true. Never log raw request data without sanitization."
     }
   ]
 }

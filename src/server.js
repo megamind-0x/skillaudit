@@ -725,6 +725,8 @@ app.get('/', (req, res) => {
         'GET /playground': 'Interactive security testing sandbox — type code, see which rules fire in real-time',
         'GET /compare': 'Visual scan comparison — diff two skill versions side-by-side, see new/resolved findings and risk delta',
         'GET /integrations': 'Copy-paste integration guides for LangChain, CrewAI, OpenAI, AutoGen, GitHub Actions, MCP, and more',
+        'GET /remediation': 'Remediation guidance for all detection rules — actionable fix advice for every finding',
+        'GET /remediation/:ruleId': 'Remediation guidance for a specific rule — how to fix a finding',
         'GET /health': 'Health check',
       }
     });
@@ -789,6 +791,30 @@ app.get('/rules.json', (req, res) => {
       name: r.name, description: r.description, patternCount: r.patterns.length
     }))
   });
+});
+
+// --- Remediation Guidance API ---
+app.get('/remediation/:ruleId', (req, res) => {
+  const rules = require('../rules/patterns.json').rules;
+  const rule = rules.find(r => r.id === req.params.ruleId);
+  if (!rule) return res.status(404).json({ error: 'Rule not found', hint: 'Use GET /rules to see all available rule IDs' });
+  res.json({
+    ruleId: rule.id,
+    severity: rule.severity,
+    category: rule.category,
+    name: rule.name,
+    description: rule.description,
+    remediation: rule.remediation || 'No remediation guidance available for this rule.',
+  });
+});
+
+// Get all remediation guidance at once
+app.get('/remediation', (req, res) => {
+  const rules = require('../rules/patterns.json').rules;
+  const guidance = rules.filter(r => r.remediation).map(r => ({
+    ruleId: r.id, severity: r.severity, category: r.category, name: r.name, remediation: r.remediation,
+  }));
+  res.json({ count: guidance.length, guidance });
 });
 
 // --- Secret Detectors ---
@@ -3741,6 +3767,7 @@ function renderReport(result) {
           <p style="color:#aaa;font-size:0.85rem;margin-bottom:0.3rem">${esc(f.description)}</p>
           <code style="display:block;background:#0f0f23;padding:0.4rem 0.6rem;border-radius:4px;font-size:0.8rem;color:#e0e0e0;overflow-x:auto">${esc(f.lineContent)}</code>
           ${f.context ? `<span style="color:#555;font-size:0.75rem">Context: ${esc(f.context)}</span>` : ''}
+          ${f.remediation ? `<div style="margin-top:0.5rem;padding:0.5rem 0.7rem;background:#0a1a0a;border:1px solid #1a3a1a;border-radius:6px"><span style="color:#00ff88;font-size:0.75rem;font-weight:700">💡 HOW TO FIX</span><p style="color:#8cb88c;font-size:0.8rem;margin-top:0.2rem">${esc(f.remediation)}</p></div>` : ''}
         </div>
       </details>`).join('');
 

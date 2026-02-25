@@ -8,6 +8,7 @@ const { scanContent, SUSPICIOUS_DOMAINS } = require('./scanner');
 const { SECRET_DETECTORS } = require('./secrets');
 const trust = require('./trust');
 const { toSarif } = require('./sarif');
+const { toSbom } = require('./sbom');
 const { verifyPayment } = require('./verify-payment');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -718,6 +719,7 @@ app.get('/', (req, res) => {
         'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
         'GET /scan/:id/card.svg': 'Visual scan summary card (SVG) — embeddable in READMEs, Slack, Discord, docs',
         'GET /scan/:id/sarif': 'SARIF v2.1.0 output — industry-standard format for GitHub Code Scanning, VS Code, Azure DevOps',
+        'GET /scan/:id/sbom': 'CycloneDX v1.5 SBOM — Software Bill of Materials with capabilities, vulnerabilities, and CWE mappings (EO 14028 compliant)',
         'GET /openapi.json': 'OpenAPI 3.0 spec',
         'GET /dashboard': 'Live threat dashboard — real-time ecosystem security stats, risk trends, flagged domains',
         'GET /docs': 'Interactive API documentation with try-it-out forms and examples',
@@ -2279,6 +2281,15 @@ app.get('/scan/:id/sarif', async (req, res) => {
   if (!result) return res.status(404).json({ error: 'Scan not found' });
   const sarif = toSarif(result, { includeSuppressed: req.query.suppressed === 'true' });
   res.type('application/sarif+json').json(sarif);
+});
+
+// --- CycloneDX SBOM Output ---
+// Software Bill of Materials — compliance-ready output for government/enterprise
+app.get('/scan/:id/sbom', async (req, res) => {
+  const result = await getScanResult(req.params.id);
+  if (!result) return res.status(404).json({ error: 'Scan not found' });
+  const sbom = toSbom(result);
+  res.type('application/vnd.cyclonedx+json').json(sbom);
 });
 
 // --- Scan Summary Card (SVG) ---

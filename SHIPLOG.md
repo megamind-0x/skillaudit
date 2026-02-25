@@ -1,5 +1,11 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (4:00 AM) — Remediation Guidance for All 43 Rules
+**What:** Every finding now includes actionable "HOW TO FIX" advice. All 43 detection rules, plus structural patterns, URL reputation, intent analysis, and threat chains — 100% coverage.
+**Why:** The gap between "scanner" and "security advisor." Snyk, SonarQube, Semgrep all provide remediation. Without it, SkillAudit tells you what's wrong but not how to fix it. Now it does both.
+**New endpoints:** `GET /remediation` (all guidance), `GET /remediation/:ruleId` (per-rule). Report pages show green "💡 HOW TO FIX" boxes inline with each finding.
+**Impact:** Agents can now auto-fix findings programmatically. Humans get clear, specific instructions instead of just red flags.
+
 ## 2026-02-25 (1:00 AM) — v1.0.0 Release + npm Publish
 **What:** Unified all version numbers to 1.0.0 and published `skillaudit@1.0.0` to npm. SkillAudit is officially production-ready.
 **Version cleanup:** The server reported v0.7.0, scanner v0.8.3, package.json v0.9.0 — all stale from different shipping cycles. Now every component reports 1.0.0: package.json, server `/health`, scanner engine, OpenAPI spec, MCP server, CLI.

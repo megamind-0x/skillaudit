@@ -1,5 +1,11 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (10:00 AM) — HMAC-SHA256 Signed Webhook Payloads
+**What:** All webhook events are now cryptographically signed. Every webhook gets a unique signing secret (`whsec_...`) on registration. Payloads are signed with HMAC-SHA256 over `"timestamp.body"` to prevent replay attacks. Headers include `X-SkillAudit-Signature`, `X-SkillAudit-Timestamp`, and `X-SkillAudit-Delivery`.
+**New endpoints:** `POST /webhooks/verify` (programmatic signature verification), `POST /webhooks/:id/rotate` (rotate signing secret). Registration response includes step-by-step verification guide and code examples in Node.js and Python.
+**Why:** This is what separates a toy webhook from infrastructure. Stripe, GitHub, Twilio — every serious webhook provider signs payloads so receivers can verify events are authentic. Without signing, anyone who knows your webhook URL can forge SkillAudit events. With signing, receivers can cryptographically verify every event came from us, wasn't tampered with, and isn't a replay. Enterprise teams require this. Security teams require this. You can't be the security layer if your own events are unsecured.
+**Security details:** Secrets are shown only once (on creation), hidden in GET /webhooks (shows `signed: true/false`). Secret rotation invalidates the old secret immediately. Timestamp validation rejects events >5 minutes old.
+
 ## 2026-02-25 (7:00 AM) — CycloneDX v1.5 SBOM Generation
 **What:** New endpoint `GET /scan/:id/sbom` generates a full CycloneDX v1.5 Software Bill of Materials from any scan result. Includes component metadata with SHA-256 hashes, PURL identifiers, all vulnerabilities mapped to CWE IDs (16 SkillAudit categories → proper CWE numbers), severity ratings, remediation recommendations, detected capabilities as services, and threat chains as compositions.
 **Why:** SBOMs are required by US Executive Order 14028 for government software supply chains, the EU Cyber Resilience Act, and NIST SSDF. No other tool generates SBOMs for AI agent skills. This makes SkillAudit the only scanner that produces compliance-ready output for the AI agent supply chain. Enterprise and government buyers need this format. Combined with SARIF output, SkillAudit now speaks both major security interchange formats.

@@ -1,5 +1,10 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (7:00 AM) — CycloneDX v1.5 SBOM Generation
+**What:** New endpoint `GET /scan/:id/sbom` generates a full CycloneDX v1.5 Software Bill of Materials from any scan result. Includes component metadata with SHA-256 hashes, PURL identifiers, all vulnerabilities mapped to CWE IDs (16 SkillAudit categories → proper CWE numbers), severity ratings, remediation recommendations, detected capabilities as services, and threat chains as compositions.
+**Why:** SBOMs are required by US Executive Order 14028 for government software supply chains, the EU Cyber Resilience Act, and NIST SSDF. No other tool generates SBOMs for AI agent skills. This makes SkillAudit the only scanner that produces compliance-ready output for the AI agent supply chain. Enterprise and government buyers need this format. Combined with SARIF output, SkillAudit now speaks both major security interchange formats.
+**Impact:** SkillAudit scan results can now be imported into any CycloneDX-compatible tool (Dependency-Track, OWASP Dependency-Check, Snyk, Sonatype). This is how you become infrastructure — by producing outputs that fit into existing enterprise security workflows.
+
 ## 2026-02-25 (4:00 AM) — Remediation Guidance for All 43 Rules
 **What:** Every finding now includes actionable "HOW TO FIX" advice. All 43 detection rules, plus structural patterns, URL reputation, intent analysis, and threat chains — 100% coverage.
 **Why:** The gap between "scanner" and "security advisor." Snyk, SonarQube, Semgrep all provide remediation. Without it, SkillAudit tells you what's wrong but not how to fix it. Now it does both.

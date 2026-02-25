@@ -704,6 +704,7 @@ app.get('/', (req, res) => {
         'POST /scan/lookup': 'Smart scan — hash content first, return cached result or scan fresh (deduplication)',
         'POST /scan/hash/bulk': 'Bulk hash lookup — check up to 50 content hashes in one call (the "check all my skills" endpoint)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
+        'GET /scan/cargo?crate=name': 'Scan a Rust crate from crates.io — fetches README, Cargo.toml, source files, checks build scripts and unsafe code',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
         'GET /feed': 'Threat intelligence feed — recent threats, flagged domains, trending rules',
@@ -2282,6 +2283,214 @@ app.get('/scan/pypi', scanLimiter, async (req, res) => {
       return res.status(404).json({ error: `Package not found on PyPI: ${pkg}`, hint: 'Check the package name and try again.' });
     }
     res.status(500).json({ error: `Failed to scan package: ${err.message}` });
+  }
+});
+
+// --- Cargo Crate Scanner ---
+// GET /scan/cargo?crate=name — scan a Rust crate from crates.io
+app.get('/scan/cargo', scanLimiter, async (req, res) => {
+  const crate = req.query.crate;
+  if (!crate) {
+    return res.status(400).json({
+      error: 'crate query parameter is required',
+      example: '/scan/cargo?crate=rmcp',
+      hint: 'Pass any crate name from crates.io',
+    });
+  }
+
+  try {
+    // Fetch crate metadata from crates.io
+    const crateUrl = `https://crates.io/api/v1/crates/${encodeURIComponent(crate)}`;
+    const crateData = await fetchUrl(crateUrl);
+    let meta;
+    try { meta = JSON.parse(crateData); } catch { return res.status(502).json({ error: 'Invalid response from crates.io' }); }
+    if (meta.errors) return res.status(404).json({ error: `Crate not found: ${crate}`, cratesIoError: meta.errors });
+
+    const crateInfo = meta.crate;
+    const latest = crateInfo.max_version || crateInfo.newest_version;
+    if (!latest) return res.status(404).json({ error: `No version info found for ${crate}` });
+
+    // Fetch version details
+    let versionInfo = {};
+    try {
+      const vData = await fetchUrl(`https://crates.io/api/v1/crates/${encodeURIComponent(crate)}/${latest}`);
+      const parsed = JSON.parse(vData);
+      versionInfo = parsed.version || {};
+    } catch {}
+
+    const filesToScan = [];
+    const cratesIoUrl = `https://crates.io/crates/${crate}`;
+
+    // 1. Fetch README
+    try {
+      const readme = await fetchUrl(`https://crates.io/api/v1/crates/${encodeURIComponent(crate)}/${latest}/readme`);
+      if (readme && readme.length > 50) {
+        filesToScan.push({ name: 'README.md', source: `crates.io:${crate}/README.md`, content: readme });
+      }
+    } catch {}
+
+    // 2. Try to fetch source files from GitHub if repository is available
+    const repoUrl = crateInfo.repository || crateInfo.homepage || '';
+    let ghOwner = null, ghRepo = null;
+    const ghMatch = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    if (ghMatch) {
+      ghOwner = ghMatch[1];
+      ghRepo = ghMatch[2].replace(/\.git$/, '').replace(/\/$/, '');
+    }
+
+    if (ghOwner && ghRepo) {
+      // Fetch key Rust source files from GitHub raw
+      const ghFiles = [
+        'Cargo.toml',
+        'src/lib.rs',
+        'src/main.rs',
+        'build.rs',
+        'src/bin/main.rs',
+      ];
+
+      for (const file of ghFiles) {
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${ghOwner}/${ghRepo}/main/${file}`;
+          const content = await fetchUrl(rawUrl);
+          if (content && content.length > 10) {
+            filesToScan.push({ name: file, source: rawUrl, content });
+          }
+        } catch {
+          // Try master branch too
+          try {
+            const rawUrl = `https://raw.githubusercontent.com/${ghOwner}/${ghRepo}/master/${file}`;
+            const content = await fetchUrl(rawUrl);
+            if (content && content.length > 10) {
+              filesToScan.push({ name: file, source: rawUrl, content });
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Scan all collected files
+    const fileResults = filesToScan.map(file => {
+      const result = scanContent(file.content, file.source || `cargo:${crate}/${file.name}`);
+      const id = recordScan(`cargo:${crate}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // Analyze Cargo.toml for suspicious signals
+    const cargoWarnings = [];
+    const cargoToml = filesToScan.find(f => f.name === 'Cargo.toml');
+    if (cargoToml) {
+      const tomlContent = cargoToml.content;
+      // Check for build scripts
+      if (/\[build-dependencies\]/i.test(tomlContent) || /build\s*=\s*"build\.rs"/i.test(tomlContent)) {
+        cargoWarnings.push({
+          type: 'build_script',
+          severity: 'medium',
+          description: 'Crate has a build script (build.rs) — runs arbitrary code at compile time',
+        });
+        // Check if build.rs was fetched and has suspicious content
+        const buildRs = filesToScan.find(f => f.name === 'build.rs');
+        if (buildRs && /(?:Command::new|std::process|reqwest|hyper|curl|wget)/i.test(buildRs.content)) {
+          cargoWarnings.push({
+            type: 'suspicious_build_script',
+            severity: 'high',
+            description: 'Build script (build.rs) contains process execution or network calls — runs at compile time',
+          });
+        }
+      }
+      // Check for proc macros (can execute arbitrary code at compile time)
+      if (/proc-macro\s*=\s*true/i.test(tomlContent)) {
+        cargoWarnings.push({
+          type: 'proc_macro',
+          severity: 'medium',
+          description: 'Crate is a procedural macro — executes arbitrary code at compile time during macro expansion',
+        });
+      }
+      // Check for unsafe in features
+      if (/\bunsafe\b/i.test(tomlContent)) {
+        cargoWarnings.push({
+          type: 'unsafe_feature',
+          severity: 'low',
+          description: 'Crate references "unsafe" in its configuration',
+        });
+      }
+    }
+
+    // Check source files for unsafe blocks
+    const srcFiles = filesToScan.filter(f => f.name.endsWith('.rs'));
+    for (const f of srcFiles) {
+      const unsafeCount = (f.content.match(/\bunsafe\b/g) || []).length;
+      if (unsafeCount > 0) {
+        cargoWarnings.push({
+          type: 'unsafe_code',
+          severity: unsafeCount > 10 ? 'high' : unsafeCount > 3 ? 'medium' : 'low',
+          file: f.name,
+          count: unsafeCount,
+          description: `${f.name} contains ${unsafeCount} unsafe block(s) — bypasses Rust's memory safety guarantees`,
+        });
+      }
+    }
+
+    // Overall risk
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    let overallRisk = worstFileRisk;
+    if (cargoWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    res.json({
+      crate,
+      version: latest,
+      description: crateInfo.description || null,
+      repository: crateInfo.repository || null,
+      homepage: crateInfo.homepage || null,
+      license: versionInfo.license || null,
+      downloads: crateInfo.downloads || 0,
+      crateSize: versionInfo.crate_size || null,
+      features: Object.keys(versionInfo.features || {}),
+      cratesIoUrl,
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: totalScore,
+      totalFindings,
+      totalCritical,
+      totalHigh,
+      cargoWarnings,
+      verdict: totalFindings === 0 && cargoWarnings.length === 0
+        ? `✅ Crate ${crate}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues in ${crate}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.`
+          : cargoWarnings.some(w => w.severity === 'high')
+            ? `🔶 ${crate}@${latest} has suspicious build scripts or excessive unsafe code. Review carefully.`
+            : totalHigh > 0
+              ? `🔶 High risk findings in ${crate}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
+              : `⚠️ ${totalFindings} finding(s) in ${crate}@${latest}. Minor concerns detected.`,
+      files: fileResults,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Crate not found on crates.io: ${crate}`, hint: 'Check the crate name and try again.' });
+    }
+    res.status(500).json({ error: `Failed to scan crate: ${err.message}` });
   }
 });
 

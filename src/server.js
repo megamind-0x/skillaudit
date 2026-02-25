@@ -279,7 +279,7 @@ async function dispatchWebhooks(url, result, scanId) {
           reportUrl: `https://skillaudit.vercel.app/report/${scanId}`,
           timestamp: new Date().toISOString(),
         };
-        fireCallback(hook.url, payload);
+        fireCallback(hook.url, payload, hook.secret);
       }
     }
   } catch (e) {
@@ -315,14 +315,29 @@ function getDomain(url) {
   try { return new URL(url).hostname; } catch { return null; }
 }
 
-function fireCallback(callbackUrl, result) {
+function fireCallback(callbackUrl, result, signingSecret) {
   try {
     const url = new URL(callbackUrl);
     const payload = JSON.stringify(result);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+      'User-Agent': 'SkillAudit/1.0-webhook',
+      'X-SkillAudit-Event': result.event || 'scan.completed',
+      'X-SkillAudit-Timestamp': String(timestamp),
+      'X-SkillAudit-Delivery': crypto.randomBytes(16).toString('hex'),
+    };
+    // HMAC-SHA256 signature (like GitHub, Stripe)
+    // Signs: "timestamp.payload" to prevent replay attacks
+    if (signingSecret) {
+      const signedPayload = `${timestamp}.${payload}`;
+      const signature = crypto.createHmac('sha256', signingSecret).update(signedPayload).digest('hex');
+      headers['X-SkillAudit-Signature'] = `sha256=${signature}`;
+    }
     const options = {
       hostname: url.hostname, port: url.port, path: url.pathname + url.search,
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'SkillAudit/0.7-webhook' },
-      timeout: 10000,
+      method: 'POST', headers, timeout: 10000,
     };
     const client = url.protocol === 'https:' ? https : http;
     const req = client.request(options);
@@ -715,6 +730,8 @@ app.get('/', (req, res) => {
         'PUT /webhooks/:id': 'Update webhook filters or toggle active (API key required)',
         'DELETE /webhooks/:id': 'Remove a webhook (API key required)',
         'POST /webhooks/:id/test': 'Send a test event to verify your webhook endpoint (API key required)',
+        'POST /webhooks/:id/rotate': 'Rotate webhook signing secret — invalidates old secret, returns new one (API key required)',
+        'POST /webhooks/verify': 'Verify a webhook signature programmatically — check HMAC-SHA256 signature and timestamp',
         'GET /certificate/:id': 'Signed audit certificate — cryptographic proof a skill was scanned',
         'GET /certificate/verify?token=': 'Verify a certificate token (HTML for browsers, JSON for APIs)',
         'GET /scan/:id/card.svg': 'Visual scan summary card (SVG) — embeddable in READMEs, Slack, Discord, docs',
@@ -3426,9 +3443,11 @@ app.post('/webhooks', async (req, res) => {
   }
 
   const id = crypto.randomBytes(6).toString('hex');
+  const secret = 'whsec_' + crypto.randomBytes(24).toString('hex');
   const webhook = {
     id,
     url,
+    secret,
     label: label || null,
     minSeverity: minSeverity || null,
     domains: Array.isArray(domains) ? domains.slice(0, 20) : null,
@@ -3440,27 +3459,42 @@ app.post('/webhooks', async (req, res) => {
 
   await db.addWebhook(apiKey, webhook);
 
+  // Return secret only on creation — it won't be shown again in GET /webhooks
+  const webhookResponse = { ...webhook };
+
   res.json({
     success: true,
-    message: 'Webhook registered. You will receive POST events matching your filters.',
-    webhook,
+    message: 'Webhook registered with HMAC-SHA256 signing. Save the secret — it will not be shown again.',
+    webhook: webhookResponse,
+    signing: {
+      secret: secret,
+      algorithm: 'HMAC-SHA256',
+      header: 'X-SkillAudit-Signature',
+      format: 'sha256=<hex>',
+      signedPayload: 'The signature covers: "{timestamp}.{body}" where timestamp is X-SkillAudit-Timestamp',
+      headers: {
+        'X-SkillAudit-Signature': 'sha256=<hmac-sha256 hex digest>',
+        'X-SkillAudit-Timestamp': 'Unix timestamp (seconds) when event was sent',
+        'X-SkillAudit-Event': 'Event type (scan.completed, webhook.test, risk_changed)',
+        'X-SkillAudit-Delivery': 'Unique delivery ID',
+      },
+      verification: {
+        step1: 'Extract timestamp from X-SkillAudit-Timestamp header',
+        step2: 'Build signed payload: `${timestamp}.${rawBody}`',
+        step3: 'Compute HMAC-SHA256 of signed payload using your webhook secret',
+        step4: 'Compare with signature in X-SkillAudit-Signature header (after "sha256=" prefix)',
+        step5: 'Reject if timestamp is >5 minutes old (replay protection)',
+        verifyEndpoint: 'POST /webhooks/verify — verify a signature programmatically',
+      },
+      codeExamples: {
+        node: `const crypto = require('crypto');\nconst signature = crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nconst valid = signature === header.replace('sha256=', '');`,
+        python: `import hmac, hashlib\nsignature = hmac.new(secret.encode(), f"{timestamp}.{raw_body}".encode(), hashlib.sha256).hexdigest()\nvalid = signature == header.replace("sha256=", "")`,
+      },
+    },
     filters: {
       minSeverity: webhook.minSeverity || 'all scans',
       domains: webhook.domains || 'all domains',
       ruleIds: webhook.ruleIds || 'all rules',
-    },
-    eventFormat: {
-      event: 'scan.completed',
-      webhookId: id,
-      scanId: 'string',
-      url: 'scanned URL',
-      riskLevel: 'clean|low|moderate|high|critical',
-      riskScore: 'number',
-      findings: 'count',
-      critical: 'count',
-      verdict: 'string',
-      reportUrl: 'https://skillaudit.vercel.app/report/:id',
-      timestamp: 'ISO-8601',
     },
   });
 });
@@ -3472,7 +3506,12 @@ app.get('/webhooks', async (req, res) => {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hooks = await db.getWebhooks(apiKey);
-  res.json({ count: hooks.length, webhooks: hooks });
+  // Never expose the signing secret in list responses
+  const safeHooks = hooks.map(h => {
+    const { secret, ...safe } = h;
+    return { ...safe, signed: !!secret };
+  });
+  res.json({ count: safeHooks.length, webhooks: safeHooks });
 });
 
 // DELETE /webhooks/:id — remove a webhook
@@ -3534,8 +3573,77 @@ app.post('/webhooks/:id/test', async (req, res) => {
     _test: true,
   };
 
-  fireCallback(hook.url, testPayload);
-  res.json({ success: true, message: 'Test event sent to ' + hook.url, payload: testPayload });
+  fireCallback(hook.url, testPayload, hook.secret);
+  res.json({ success: true, message: 'Test event sent to ' + hook.url + (hook.secret ? ' (signed)' : ' (unsigned)'), payload: testPayload, signed: !!hook.secret });
+});
+
+// --- Webhook Signature Verification ---
+// POST /webhooks/verify — verify a webhook signature programmatically
+app.post('/webhooks/verify', (req, res) => {
+  const { secret, signature, timestamp, body } = req.body;
+  if (!secret || !signature || !timestamp || !body) {
+    return res.status(400).json({
+      error: 'secret, signature, timestamp, and body are all required',
+      example: {
+        secret: 'whsec_...',
+        signature: 'sha256=abc123...',
+        timestamp: '1708070400',
+        body: '{"event":"scan.completed",...}',
+      },
+    });
+  }
+
+  // Verify timestamp isn't too old (5 minute window)
+  const ts = parseInt(timestamp);
+  const now = Math.floor(Date.now() / 1000);
+  const age = Math.abs(now - ts);
+  if (age > 300) {
+    return res.json({
+      valid: false,
+      reason: `Timestamp too old (${age}s). Max allowed: 300s. This protects against replay attacks.`,
+    });
+  }
+
+  // Compute expected signature
+  const signedPayload = `${timestamp}.${typeof body === 'string' ? body : JSON.stringify(body)}`;
+  const expected = crypto.createHmac('sha256', secret).update(signedPayload).digest('hex');
+  const provided = signature.replace(/^sha256=/, '');
+
+  // Constant-time comparison (safe against timing attacks)
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const providedBuf = Buffer.from(provided, 'utf8');
+  const valid = expectedBuf.length === providedBuf.length && crypto.timingSafeEqual(expectedBuf, providedBuf);
+
+  res.json({
+    valid,
+    reason: valid ? 'Signature is valid and timestamp is within the 5-minute window.' : 'Signature mismatch. Check your secret and payload.',
+    timestampAge: `${age}s`,
+  });
+});
+
+// --- Webhook Secret Rotation ---
+// POST /webhooks/:id/rotate — generate a new signing secret
+app.post('/webhooks/:id/rotate', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey || !API_KEYS.has(apiKey)) {
+    return res.status(401).json({ error: 'API key required.' });
+  }
+  const hook = await db.getWebhook(apiKey, req.params.id);
+  if (!hook) return res.status(404).json({ error: 'Webhook not found' });
+
+  const oldSecretPrefix = hook.secret ? hook.secret.substring(0, 12) + '...' : 'none';
+  const newSecret = 'whsec_' + crypto.randomBytes(24).toString('hex');
+  hook.secret = newSecret;
+  hook.updatedAt = new Date().toISOString();
+  await db.addWebhook(apiKey, hook);
+
+  res.json({
+    success: true,
+    message: 'Signing secret rotated. The old secret is now invalid. Save the new one — it will not be shown again.',
+    webhookId: hook.id,
+    oldSecretPrefix,
+    newSecret,
+  });
 });
 
 // --- Scan Certificates (Signed Proof of Audit) ---

@@ -1,5 +1,10 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (4:00 PM) — GitHub Repository Scanner
+**What:** New endpoint `GET /scan/github?repo=owner/name` scans any public GitHub repository. Fetches security-relevant files across all ecosystems (README, package.json, Cargo.toml, pyproject.toml, source entry points, Dockerfile, CI workflows, env examples). Includes repo-level security analysis: Dockerfile issues (unpinned tags, root user, baked-in secrets), CI/CD credential leaks, and real values in .env.example files. Auto-detects project type and supports branch selection.
+**Why:** Most MCP servers and agent tools live on GitHub. This is the "audit my project" endpoint — one URL gets you a full security report across all files. Combined with the npm/PyPI/Cargo scanners, SkillAudit now covers the entire supply chain: individual packages AND source repositories.
+**Tested with:** `megamind-0x/skillaudit` (our own repo — 4 files scanned, correctly flags patterns in our scanner code). Error handling works for nonexistent repos and missing params.
+
 ## 2026-02-25 (1:00 PM) — Cargo Crate Scanner (3rd Package Ecosystem)
 **What:** New endpoint `GET /scan/cargo?crate=name` scans Rust crates from crates.io. Fetches README, Cargo.toml, and source files (lib.rs, main.rs, build.rs) from the linked GitHub repo. Includes Rust-specific security checks: build scripts (arbitrary compile-time code), suspicious build scripts with network/process calls, procedural macros, and unsafe block counting per file.
 **Why:** Rust is the #2 language for MCP servers after TypeScript. The official MCP Rust SDK (`rmcp`) has 4M+ downloads. SkillAudit now scans all three major agent tool ecosystems — npm, PyPI, and Cargo. No other AI security scanner covers Rust crates. This positions SkillAudit as THE multi-ecosystem scanner for the agent tool supply chain.

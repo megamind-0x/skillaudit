@@ -1,5 +1,10 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-02-25 (1:00 PM) — Cargo Crate Scanner (3rd Package Ecosystem)
+**What:** New endpoint `GET /scan/cargo?crate=name` scans Rust crates from crates.io. Fetches README, Cargo.toml, and source files (lib.rs, main.rs, build.rs) from the linked GitHub repo. Includes Rust-specific security checks: build scripts (arbitrary compile-time code), suspicious build scripts with network/process calls, procedural macros, and unsafe block counting per file.
+**Why:** Rust is the #2 language for MCP servers after TypeScript. The official MCP Rust SDK (`rmcp`) has 4M+ downloads. SkillAudit now scans all three major agent tool ecosystems — npm, PyPI, and Cargo. No other AI security scanner covers Rust crates. This positions SkillAudit as THE multi-ecosystem scanner for the agent tool supply chain.
+**Tested with:** `rmcp` (MCP Rust SDK, 4M downloads), `serde` (clean scan). Error handling works for nonexistent crates and missing params.
+
 ## 2026-02-25 (10:00 AM) — HMAC-SHA256 Signed Webhook Payloads
 **What:** All webhook events are now cryptographically signed. Every webhook gets a unique signing secret (`whsec_...`) on registration. Payloads are signed with HMAC-SHA256 over `"timestamp.body"` to prevent replay attacks. Headers include `X-SkillAudit-Signature`, `X-SkillAudit-Timestamp`, and `X-SkillAudit-Delivery`.
 **New endpoints:** `POST /webhooks/verify` (programmatic signature verification), `POST /webhooks/:id/rotate` (rotate signing secret). Registration response includes step-by-step verification guide and code examples in Node.js and Python.

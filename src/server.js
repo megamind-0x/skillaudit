@@ -705,6 +705,7 @@ app.get('/', (req, res) => {
         'POST /scan/hash/bulk': 'Bulk hash lookup — check up to 50 content hashes in one call (the "check all my skills" endpoint)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /scan/cargo?crate=name': 'Scan a Rust crate from crates.io — fetches README, Cargo.toml, source files, checks build scripts and unsafe code',
+        'GET /scan/github?repo=owner/name': 'Scan a GitHub repository — fetches security-relevant files, Dockerfile analysis, CI/CD checks, multi-ecosystem detection',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
         'GET /feed': 'Threat intelligence feed — recent threats, flagged domains, trending rules',
@@ -2491,6 +2492,201 @@ app.get('/scan/cargo', scanLimiter, async (req, res) => {
       return res.status(404).json({ error: `Crate not found on crates.io: ${crate}`, hint: 'Check the crate name and try again.' });
     }
     res.status(500).json({ error: `Failed to scan crate: ${err.message}` });
+  }
+});
+
+// --- GitHub Repository Scanner ---
+// GET /scan/github?repo=owner/name — scan a GitHub repository
+app.get('/scan/github', scanLimiter, async (req, res) => {
+  const repo = req.query.repo;
+  if (!repo || !repo.includes('/')) {
+    return res.status(400).json({
+      error: 'repo query parameter is required (format: owner/name)',
+      example: '/scan/github?repo=modelcontextprotocol/servers',
+      hint: 'Pass any public GitHub repository in owner/name format',
+    });
+  }
+
+  const [owner, name] = repo.split('/').slice(0, 2);
+  const branch = req.query.branch || 'main';
+
+  try {
+    // Fetch repo metadata from GitHub API
+    let repoMeta = {};
+    try {
+      const metaRaw = await fetchUrl(`https://api.github.com/repos/${owner}/${name}`);
+      repoMeta = JSON.parse(metaRaw);
+    } catch {
+      // Try without API (just raw files)
+    }
+
+    if (repoMeta.message === 'Not Found') {
+      return res.status(404).json({ error: `Repository not found: ${repo}`, hint: 'Check the owner/name and ensure the repo is public.' });
+    }
+
+    const filesToScan = [];
+    const ghBase = `https://raw.githubusercontent.com/${owner}/${name}`;
+
+    // Security-relevant files to fetch — covers all major ecosystems
+    const targetFiles = [
+      'README.md', 'readme.md',
+      'SKILL.md', 'skill.json', 'mcp.json', 'ai-plugin.json',
+      'package.json', 'Cargo.toml', 'pyproject.toml', 'setup.py', 'setup.cfg',
+      'src/lib.rs', 'src/main.rs', 'build.rs',
+      'src/index.js', 'src/index.ts', 'index.js', 'index.ts',
+      'src/server.js', 'src/server.ts', 'server.js', 'server.ts',
+      'main.py', 'app.py', 'server.py', 'src/main.py', 'src/server.py',
+      'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
+      '.env.example', '.env.sample',
+      'Makefile',
+      '.github/workflows/ci.yml', '.github/workflows/ci.yaml',
+      '.github/workflows/main.yml', '.github/workflows/deploy.yml',
+    ];
+
+    // Try main branch, fall back to master
+    let fetchBranch = branch;
+    let fetchedAny = false;
+
+    for (const branchTry of [branch, branch === 'main' ? 'master' : null].filter(Boolean)) {
+      if (fetchedAny) break;
+      for (const file of targetFiles) {
+        try {
+          const url = `${ghBase}/${branchTry}/${file}`;
+          const content = await fetchUrl(url);
+          if (content && content.length > 10) {
+            filesToScan.push({ name: file, source: url, content: content.substring(0, 100000) });
+            fetchedAny = true;
+            fetchBranch = branchTry;
+          }
+        } catch {}
+      }
+    }
+
+    if (filesToScan.length === 0) {
+      return res.status(404).json({
+        error: `Could not fetch any files from ${repo}`,
+        hint: 'Ensure the repository is public and has files in the expected locations.',
+        triedBranch: branch,
+      });
+    }
+
+    // Detect project type from fetched files
+    const fileNames = new Set(filesToScan.map(f => f.name));
+    const projectType = fileNames.has('Cargo.toml') ? 'rust'
+      : fileNames.has('package.json') ? 'node'
+      : fileNames.has('pyproject.toml') || fileNames.has('setup.py') ? 'python'
+      : 'unknown';
+
+    // Scan all files
+    const fileResults = filesToScan.map(file => {
+      const result = scanContent(file.content, file.source || `github:${repo}/${file.name}`);
+      const id = recordScan(`github:${repo}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        medium: result.summary.medium,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // Repo-level warnings
+    const repoWarnings = [];
+
+    // Check for Dockerfile security issues
+    const dockerfile = filesToScan.find(f => f.name === 'Dockerfile');
+    if (dockerfile) {
+      const dc = dockerfile.content;
+      if (/^FROM\s+\S+:latest/mi.test(dc)) {
+        repoWarnings.push({ type: 'docker_latest_tag', severity: 'medium', description: 'Dockerfile uses :latest tag — unpinned version, supply chain risk' });
+      }
+      if (/^USER\s+root/mi.test(dc) || !/^USER\s+/mi.test(dc)) {
+        repoWarnings.push({ type: 'docker_runs_as_root', severity: 'medium', description: 'Dockerfile runs as root (no USER directive) — container escape risk' });
+      }
+      if (/COPY.*\.env/i.test(dc) || /ADD.*\.env/i.test(dc)) {
+        repoWarnings.push({ type: 'docker_copies_env', severity: 'high', description: 'Dockerfile copies .env file into image — secrets baked into container' });
+      }
+    }
+
+    // Check for CI/CD with secrets
+    const ciFiles = filesToScan.filter(f => f.name.startsWith('.github/workflows/'));
+    for (const ci of ciFiles) {
+      if (/\$\{\{\s*secrets\./i.test(ci.content)) {
+        // This is normal, but flag if secrets are echoed
+        if (/echo.*\$\{\{\s*secrets\./i.test(ci.content)) {
+          repoWarnings.push({ type: 'ci_echoes_secrets', severity: 'high', file: ci.name, description: 'CI workflow echoes secrets — may leak credentials in logs' });
+        }
+      }
+    }
+
+    // Check .env.example for real-looking values
+    const envExample = filesToScan.find(f => f.name.includes('.env.'));
+    if (envExample) {
+      const lines = envExample.content.split('\n');
+      for (const line of lines) {
+        if (/^[A-Z_]+=\S{20,}$/.test(line.trim()) && !/example|placeholder|your[_-]|xxx|replace/i.test(line)) {
+          repoWarnings.push({ type: 'env_example_real_values', severity: 'high', file: envExample.name, description: 'Environment example file may contain real credential values (long non-placeholder strings)' });
+          break;
+        }
+      }
+    }
+
+    // Overall risk
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    let overallRisk = worstFileRisk;
+    if (repoWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    res.json({
+      repo: `${owner}/${name}`,
+      branch: fetchBranch,
+      description: repoMeta.description || null,
+      stars: repoMeta.stargazers_count || null,
+      language: repoMeta.language || null,
+      license: repoMeta.license?.spdx_id || null,
+      homepage: repoMeta.homepage || null,
+      defaultBranch: repoMeta.default_branch || fetchBranch,
+      githubUrl: `https://github.com/${owner}/${name}`,
+      projectType,
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: totalScore,
+      totalFindings,
+      totalCritical,
+      totalHigh,
+      repoWarnings,
+      verdict: totalFindings === 0 && repoWarnings.length === 0
+        ? `✅ Repository ${owner}/${name} appears clean — ${fileResults.length} file(s) scanned, no issues.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues in ${owner}/${name} — ${totalCritical} critical finding(s). Do NOT install without manual audit.`
+          : repoWarnings.some(w => w.severity === 'high')
+            ? `🔶 Repository-level security concerns in ${owner}/${name}. Review warnings.`
+            : totalHigh > 0
+              ? `🔶 High risk findings in ${owner}/${name} — ${totalHigh} high severity issue(s). Review recommended.`
+              : `⚠️ ${totalFindings} finding(s) in ${owner}/${name}. Minor concerns detected.`,
+      files: fileResults,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Repository not found: ${repo}`, hint: 'Check the owner/name and ensure the repo is public.' });
+    }
+    res.status(500).json({ error: `Failed to scan repository: ${err.message}` });
   }
 });
 

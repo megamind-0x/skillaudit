@@ -706,6 +706,7 @@ app.get('/', (req, res) => {
         'POST /scan/hash/bulk': 'Bulk hash lookup — check up to 50 content hashes in one call (the "check all my skills" endpoint)',
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /scan/cargo?crate=name': 'Scan a Rust crate from crates.io — fetches README, Cargo.toml, source files, checks build scripts and unsafe code',
+        'GET /scan/go?module=path': 'Scan a Go module — fetches source from GitHub, checks CGo, unsafe, exec, syscall, plugin loading, replace directives',
         'GET /scan/github?repo=owner/name': 'Scan a GitHub repository — fetches security-relevant files, Dockerfile analysis, CI/CD checks, multi-ecosystem detection',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -2691,6 +2692,316 @@ app.get('/scan/cargo', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Go Module Scanner ---
+// GET /scan/go?module=module/path — scan a Go module from pkg.go.dev / proxy.golang.org
+app.get('/scan/go', scanLimiter, async (req, res) => {
+  const mod = req.query.module;
+  if (!mod) {
+    return res.status(400).json({
+      error: 'module query parameter is required',
+      example: '/scan/go?module=github.com/anthropics/anthropic-sdk-go',
+      hint: 'Pass any Go module path (e.g., github.com/owner/repo)',
+    });
+  }
+
+  try {
+    // Fetch module info from Go module proxy
+    const encodedMod = mod.replace(/\//g, '/').split('/').map(encodeURIComponent).join('/');
+    let latest;
+    try {
+      const latestRaw = await fetchUrl(`https://proxy.golang.org/${encodedMod}/@latest`);
+      const latestInfo = JSON.parse(latestRaw);
+      latest = latestInfo.Version;
+    } catch {
+      return res.status(404).json({
+        error: `Module not found on Go proxy: ${mod}`,
+        hint: 'Check the module path. Must be a public Go module indexed by proxy.golang.org.',
+      });
+    }
+
+    if (!latest) {
+      return res.status(404).json({ error: `No version info found for ${mod}` });
+    }
+
+    // Extract GitHub owner/repo from module path (most Go modules are on GitHub)
+    let ghOwner = null, ghRepo = null;
+    const ghMatch = mod.match(/^github\.com\/([^\/]+)\/([^\/]+)/);
+    if (ghMatch) {
+      ghOwner = ghMatch[1];
+      ghRepo = ghMatch[2];
+    }
+
+    const filesToScan = [];
+    const pkgUrl = `https://pkg.go.dev/${mod}`;
+
+    // Fetch key files from GitHub if available
+    if (ghOwner && ghRepo) {
+      const ghFiles = [
+        'go.mod', 'go.sum',
+        'README.md', 'readme.md',
+        'main.go', 'cmd/main.go', 'cmd/root.go',
+        'server.go', 'client.go', 'handler.go',
+        'internal/server.go', 'pkg/server.go',
+        'Dockerfile', 'docker-compose.yml',
+        'Makefile',
+        '.github/workflows/ci.yml', '.github/workflows/ci.yaml',
+      ];
+
+      for (const branchTry of ['main', 'master']) {
+        if (filesToScan.length > 0) break;
+        for (const file of ghFiles) {
+          try {
+            const rawUrl = `https://raw.githubusercontent.com/${ghOwner}/${ghRepo}/${branchTry}/${file}`;
+            const content = await fetchUrl(rawUrl);
+            if (content && content.length > 10) {
+              filesToScan.push({ name: file, source: rawUrl, content: content.substring(0, 100000) });
+            }
+          } catch {}
+        }
+      }
+
+      // Try to find main package source files in root directory
+      if (filesToScan.some(f => f.name === 'go.mod')) {
+        const goSourceFiles = ['config.go', 'api.go', 'types.go', 'util.go', 'tools.go', 'skill.go', 'plugin.go'];
+        const branch = filesToScan[0].source.includes('/main/') ? 'main' : 'master';
+        for (const file of goSourceFiles) {
+          try {
+            const rawUrl = `https://raw.githubusercontent.com/${ghOwner}/${ghRepo}/${branch}/${file}`;
+            const content = await fetchUrl(rawUrl);
+            if (content && content.length > 10) {
+              filesToScan.push({ name: file, source: rawUrl, content: content.substring(0, 100000) });
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (filesToScan.length === 0) {
+      return res.status(404).json({
+        error: `Could not fetch source files for ${mod}`,
+        hint: ghOwner ? 'Repository may be private or have a non-standard structure.' : 'Only GitHub-hosted Go modules are supported for source scanning.',
+        pkgUrl,
+      });
+    }
+
+    // Scan all files
+    const fileResults = filesToScan.map(file => {
+      const result = scanContent(file.content, file.source || `go:${mod}/${file.name}`);
+      const id = recordScan(`go:${mod}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // Go-specific security analysis
+    const goWarnings = [];
+
+    // Analyze go.mod
+    const goMod = filesToScan.find(f => f.name === 'go.mod');
+    if (goMod) {
+      const modContent = goMod.content;
+
+      // Check for replace directives (can redirect dependencies)
+      const replaceMatches = modContent.match(/^replace\s+.+/gm);
+      if (replaceMatches) {
+        for (const rep of replaceMatches.slice(0, 5)) {
+          if (/=>\s*\.\.?\//i.test(rep)) {
+            goWarnings.push({
+              type: 'local_replace',
+              severity: 'medium',
+              description: `go.mod has local replace directive: ${rep.trim().substring(0, 100)}`,
+            });
+          } else {
+            goWarnings.push({
+              type: 'replace_directive',
+              severity: 'low',
+              description: `go.mod redirects dependency: ${rep.trim().substring(0, 100)}`,
+            });
+          }
+        }
+      }
+
+      // Check Go version (very old versions may lack security fixes)
+      const goVerMatch = modContent.match(/^go\s+(\d+\.\d+)/m);
+      if (goVerMatch) {
+        const ver = parseFloat(goVerMatch[1]);
+        if (ver < 1.19) {
+          goWarnings.push({
+            type: 'old_go_version',
+            severity: 'medium',
+            description: `Module requires Go ${goVerMatch[1]} — versions below 1.19 lack important security features (workspace mode, vuln checking)`,
+          });
+        }
+      }
+    }
+
+    // Analyze Go source files for unsafe patterns
+    const goSrcFiles = filesToScan.filter(f => f.name.endsWith('.go'));
+    for (const f of goSrcFiles) {
+      const src = f.content;
+
+      // CGo usage (calls into C code — bypasses Go safety)
+      if (/import\s+"C"/m.test(src) || /#include\s+/m.test(src)) {
+        goWarnings.push({
+          type: 'cgo_usage',
+          severity: 'high',
+          file: f.name,
+          description: `${f.name} uses CGo (import "C") — calls into C code, bypassing Go's memory safety and garbage collection`,
+        });
+      }
+
+      // unsafe package
+      const unsafeCount = (src.match(/\bunsafe\.\w+/g) || []).length;
+      if (unsafeCount > 0) {
+        goWarnings.push({
+          type: 'unsafe_package',
+          severity: unsafeCount > 5 ? 'high' : 'medium',
+          file: f.name,
+          count: unsafeCount,
+          description: `${f.name} uses ${unsafeCount} unsafe.* call(s) — bypasses Go type safety`,
+        });
+      }
+
+      // os/exec usage
+      if (/os\/exec/.test(src) || /exec\.Command/.test(src)) {
+        goWarnings.push({
+          type: 'exec_command',
+          severity: 'medium',
+          file: f.name,
+          description: `${f.name} uses os/exec — runs external commands`,
+        });
+      }
+
+      // syscall usage
+      if (/\bsyscall\.\w+/.test(src)) {
+        goWarnings.push({
+          type: 'syscall_usage',
+          severity: 'medium',
+          file: f.name,
+          description: `${f.name} uses syscall package — direct system calls`,
+        });
+      }
+
+      // reflect usage (can bypass type safety)
+      if (/\breflect\./.test(src) && (src.match(/\breflect\.\w+/g) || []).length > 3) {
+        goWarnings.push({
+          type: 'heavy_reflect',
+          severity: 'low',
+          file: f.name,
+          description: `${f.name} uses reflect package extensively — can bypass type safety`,
+        });
+      }
+
+      // Plugin loading (loads arbitrary .so files)
+      if (/plugin\.Open/.test(src)) {
+        goWarnings.push({
+          type: 'plugin_loading',
+          severity: 'high',
+          file: f.name,
+          description: `${f.name} loads Go plugins (plugin.Open) — executes arbitrary .so files at runtime`,
+        });
+      }
+
+      // Build tags / constraints that could hide code
+      if (/\/\/go:build\s+ignore/.test(src) || /\/\/\s*\+build\s+ignore/.test(src)) {
+        goWarnings.push({
+          type: 'ignored_build_tag',
+          severity: 'low',
+          file: f.name,
+          description: `${f.name} has a build ignore tag — file excluded from normal builds but still in repo`,
+        });
+      }
+    }
+
+    // Analyze Dockerfile for Go-specific issues
+    const dockerfile = filesToScan.find(f => f.name === 'Dockerfile');
+    if (dockerfile) {
+      const dc = dockerfile.content;
+      if (/CGO_ENABLED=1/.test(dc)) {
+        goWarnings.push({
+          type: 'docker_cgo_enabled',
+          severity: 'medium',
+          description: 'Dockerfile enables CGo (CGO_ENABLED=1) — binary depends on C libraries, larger attack surface',
+        });
+      }
+      if (/FROM\s+golang.*\n(?:(?!FROM)[\s\S])*?(?:ENTRYPOINT|CMD)/m.test(dc) && !/FROM\s+\S+\s+as\s+/i.test(dc) && !/FROM\s+(?:scratch|alpine|distroless|gcr\.io)/im.test(dc.split(/FROM\s+golang/i).pop())) {
+        goWarnings.push({
+          type: 'no_multistage_build',
+          severity: 'low',
+          description: 'Dockerfile ships the full Go toolchain — use multi-stage build with scratch/distroless for smaller, safer images',
+        });
+      }
+    }
+
+    // Overall risk
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    let overallRisk = worstFileRisk;
+    if (goWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    // Count dependencies from go.mod
+    let depCount = 0;
+    if (goMod) {
+      const reqBlock = goMod.content.match(/require\s*\(([\s\S]*?)\)/);
+      if (reqBlock) {
+        depCount = (reqBlock[1].match(/^\s+\S+/gm) || []).length;
+      } else {
+        depCount = (goMod.content.match(/^require\s+\S+/gm) || []).length;
+      }
+    }
+
+    res.json({
+      module: mod,
+      version: latest,
+      repository: ghOwner ? `https://github.com/${ghOwner}/${ghRepo}` : null,
+      pkgUrl,
+      goVersion: goMod ? (goMod.content.match(/^go\s+(\S+)/m) || [])[1] || null : null,
+      dependencyCount: depCount,
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: totalScore,
+      totalFindings,
+      totalCritical,
+      totalHigh,
+      goWarnings,
+      verdict: totalFindings === 0 && goWarnings.length === 0
+        ? `✅ Module ${mod}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
+        : totalCritical > 0
+          ? `🔴 CRITICAL issues in ${mod}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.`
+          : goWarnings.some(w => w.severity === 'high')
+            ? `🔶 ${mod}@${latest} uses unsafe patterns (CGo, unsafe package, or plugin loading). Review carefully.`
+            : totalHigh > 0
+              ? `🔶 High risk findings in ${mod}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
+              : `⚠️ ${totalFindings} finding(s) in ${mod}@${latest}. Minor concerns detected.`,
+      files: fileResults,
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Module not found: ${mod}`, hint: 'Check the module path and ensure it is public.' });
+    }
+    res.status(500).json({ error: `Failed to scan module: ${err.message}` });
+  }
+});
+
 // --- GitHub Repository Scanner ---
 // GET /scan/github?repo=owner/name — scan a GitHub repository
 app.get('/scan/github', scanLimiter, async (req, res) => {
@@ -4370,6 +4681,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
+      '/scan/go': { get: { summary: 'Scan a Go module', description: 'Fetches source files from GitHub for a Go module, scans for security issues, and performs Go-specific checks (CGo, unsafe, exec, syscall, plugin loading, replace directives).', parameters: [{ name: 'module', in: 'query', required: true, schema: { type: 'string' }, description: 'Go module path', example: 'github.com/anthropics/anthropic-sdk-go' }], responses: { '200': { description: 'Go module scan results' }, '404': { description: 'Module not found' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
       '/scan/history/url': { get: { summary: 'URL scan history with drift detection and trend analysis', description: 'Returns the complete scan history for a URL — every past scan with risk level, score, and findings count. Includes trend analysis (worsening/improving/stable), peak risk, and score averages. Use to monitor how a skill evolves over time and detect supply chain attacks where a safe skill turns malicious after gaining trust.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL to check history for' }, { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 50 }, description: 'Max entries to return' }], responses: { '200': { description: 'Scan history with trend analysis' } } } },
       '/scan/hash/{hash}': { get: { summary: 'Look up scan result by content SHA-256 hash', description: 'The VirusTotal model for SkillAudit. Hash your content locally with SHA-256, then check if it has been scanned before. Returns the cached scan result instantly — no re-scanning needed. Enables offline-first workflows: hash locally, lookup remotely.', parameters: [{ name: 'hash', in: 'path', required: true, schema: { type: 'string', pattern: '^[a-f0-9]{64}$' }, description: 'SHA-256 hex hash of the content to look up' }], responses: { '200': { description: 'Cached scan result found' }, '404': { description: 'No scan found for this hash' } } } },

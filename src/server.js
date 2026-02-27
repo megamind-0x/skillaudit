@@ -680,6 +680,7 @@ app.get('/', (req, res) => {
         'POST /gate/bulk': 'Bulk gate — check multiple skills at once, get a single allow/deny for the set',
         'POST /scan/url': 'Scan a skill by URL (supports callback)',
         'POST /scan/content': 'Scan raw skill content',
+        'POST /scan/files': 'Multi-file project scan — scan a set of named files as a project with cross-file threat analysis',
         'POST /scan/deep': 'Deep scan with capability analysis (x402: $0.05 USDC)',
         'POST /scan/batch': 'Batch scan multiple URLs (x402: $0.10 USDC)',
         'POST /scan/compare': 'Compare two skill versions (x402: $0.05 USDC)',
@@ -884,6 +885,201 @@ app.post('/scan/content', scanLimiter, (req, res) => {
     return res.type('application/sarif+json').json(toSarif(result));
   }
   res.json(result);
+});
+
+// --- Multi-File Project Scan ---
+// POST /scan/files — scan multiple named files as a project
+// Fills the gap between single-content and GitHub repo scanning.
+// Use case: CI pipelines, local files, agent pre-install audits.
+app.post('/scan/files', scanLimiter, (req, res) => {
+  const { files, projectName } = req.body;
+
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({
+      error: 'files array is required',
+      example: {
+        projectName: 'my-agent-tool',
+        files: [
+          { name: 'SKILL.md', content: '# My Skill\n...' },
+          { name: 'index.js', content: 'const http = require("http");\n...' },
+          { name: 'package.json', content: '{"name":"my-tool","version":"1.0.0"}' },
+        ],
+      },
+      hint: 'Each file needs a name and content string. Max 30 files, 500KB per file.',
+    });
+  }
+
+  if (files.length > 30) {
+    return res.status(400).json({ error: 'Maximum 30 files per project scan' });
+  }
+
+  // Validate files
+  const validFiles = [];
+  const invalid = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (!f || typeof f !== 'object' || !f.name || !f.content) {
+      invalid.push({ index: i, reason: 'Missing name or content' });
+      continue;
+    }
+    if (typeof f.content !== 'string') {
+      invalid.push({ index: i, name: f.name, reason: 'Content must be a string' });
+      continue;
+    }
+    if (f.content.length > 512000) {
+      invalid.push({ index: i, name: f.name, reason: 'Content exceeds 500KB limit' });
+      continue;
+    }
+    validFiles.push(f);
+  }
+
+  if (validFiles.length === 0) {
+    return res.status(400).json({ error: 'No valid files provided', invalid });
+  }
+
+  const project = projectName || 'unnamed-project';
+
+  // Scan each file
+  const fileResults = validFiles.map(file => {
+    const source = `project:${project}/${file.name}`;
+    const result = scanContent(file.content, source);
+    const id = recordScan(source, result);
+    return {
+      file: file.name,
+      id,
+      riskLevel: result.riskLevel,
+      riskScore: result.riskScore,
+      findings: result.summary.total,
+      critical: result.summary.critical,
+      high: result.summary.high,
+      medium: result.summary.medium,
+      low: result.summary.low,
+      suppressed: result.summary.suppressed,
+      capabilities: result.capabilityStats,
+      threatChains: (result.threatChains || []).length,
+      reportUrl: `/report/${id}`,
+      topFindings: result.findings.slice(0, 3).map(f => ({
+        severity: f.severity,
+        name: f.name,
+        rule: f.ruleId,
+        line: f.line,
+      })),
+    };
+  });
+
+  // Cross-file analysis: detect read→exfil across files
+  // A file reading credentials + another file making network requests = threat
+  const crossFileThreats = [];
+  const fileCapabilities = {};
+  for (const file of validFiles) {
+    const caps = new Set();
+    if (/(?:readFile|fs\.read|cat\s+|open\s*\(|\.env|credentials|secret)/i.test(file.content)) caps.add('file_read');
+    if (/(?:fetch|axios|http\.request|curl|wget|\.post\s*\()/i.test(file.content)) caps.add('network');
+    if (/(?:exec|spawn|child_process|os\.system|subprocess)/i.test(file.content)) caps.add('exec');
+    if (/(?:writeFile|fs\.write|appendFile)/i.test(file.content)) caps.add('file_write');
+    if (/(?:process\.env|os\.environ)/i.test(file.content)) caps.add('env_access');
+    fileCapabilities[file.name] = caps;
+  }
+
+  // Check cross-file threat chains
+  const allCaps = new Set();
+  for (const caps of Object.values(fileCapabilities)) {
+    for (const c of caps) allCaps.add(c);
+  }
+
+  // file_read in one file + network in another = cross-file exfil risk
+  const readFiles = Object.entries(fileCapabilities).filter(([, caps]) => caps.has('file_read')).map(([name]) => name);
+  const netFiles = Object.entries(fileCapabilities).filter(([, caps]) => caps.has('network')).map(([name]) => name);
+  const execFiles = Object.entries(fileCapabilities).filter(([, caps]) => caps.has('exec')).map(([name]) => name);
+
+  if (readFiles.length > 0 && netFiles.length > 0) {
+    // Only flag if they're different files (same-file is caught by per-file scanner)
+    const crossFiles = readFiles.filter(f => !netFiles.includes(f));
+    if (crossFiles.length > 0 || netFiles.filter(f => !readFiles.includes(f)).length > 0) {
+      crossFileThreats.push({
+        type: 'cross_file_exfiltration',
+        severity: 'high',
+        description: `File reading in [${readFiles.join(', ')}] combined with network access in [${netFiles.join(', ')}] creates a potential cross-file exfiltration path.`,
+        readFiles,
+        networkFiles: netFiles,
+      });
+    }
+  }
+
+  if (readFiles.length > 0 && execFiles.length > 0) {
+    crossFileThreats.push({
+      type: 'cross_file_read_exec',
+      severity: 'high',
+      description: `File reading in [${readFiles.join(', ')}] combined with code execution in [${execFiles.join(', ')}] — could read sensitive data and execute arbitrary commands.`,
+      readFiles,
+      execFiles,
+    });
+  }
+
+  // Aggregate stats
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const worstRisk = fileResults.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  // Bump risk if cross-file threats found
+  let overallRisk = worstRisk;
+  if (crossFileThreats.length > 0) {
+    const idx = riskOrder.indexOf(overallRisk);
+    if (idx < riskOrder.length - 1) overallRisk = riskOrder[Math.min(idx + 1, riskOrder.length - 1)];
+  }
+
+  const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+  const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+  const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+  const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+  const totalThreatChains = fileResults.reduce((s, r) => s + r.threatChains, 0);
+
+  const riskBreakdown = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+  fileResults.forEach(r => { riskBreakdown[r.riskLevel] = (riskBreakdown[r.riskLevel] || 0) + 1; });
+
+  const flagged = fileResults.filter(r => ['moderate', 'high', 'critical'].includes(r.riskLevel));
+
+  // Detect project type from file names
+  const fileNames = new Set(validFiles.map(f => f.name.toLowerCase()));
+  const projectType = fileNames.has('cargo.toml') ? 'rust'
+    : fileNames.has('package.json') ? 'node'
+    : fileNames.has('pyproject.toml') || fileNames.has('setup.py') ? 'python'
+    : fileNames.has('go.mod') ? 'go'
+    : 'unknown';
+
+  res.json({
+    project,
+    projectType,
+    filesSubmitted: files.length,
+    filesScanned: validFiles.length,
+    filesInvalid: invalid.length,
+    invalid: invalid.length > 0 ? invalid : undefined,
+    overallRisk,
+    totalRiskScore: totalScore,
+    totalFindings,
+    totalCritical,
+    totalHigh,
+    totalThreatChains,
+    riskBreakdown,
+    crossFileAnalysis: {
+      capabilityMap: Object.fromEntries(
+        Object.entries(fileCapabilities).map(([name, caps]) => [name, [...caps]])
+      ),
+      threats: crossFileThreats,
+      threatCount: crossFileThreats.length,
+    },
+    verdict: totalFindings === 0 && crossFileThreats.length === 0
+      ? `✅ Project "${project}" appears clean — ${validFiles.length} file(s) scanned, no issues found.`
+      : totalCritical > 0
+        ? `🔴 CRITICAL issues in project "${project}" — ${totalCritical} critical finding(s) across ${flagged.length} file(s). Do NOT install without manual audit.`
+        : crossFileThreats.length > 0
+          ? `🔶 Cross-file threat patterns detected in "${project}" — ${crossFileThreats.length} cross-file risk(s). Files combine capabilities that create security concerns.`
+          : totalHigh > 0
+            ? `🔶 High risk findings in project "${project}" — ${totalHigh} high severity issue(s). Review recommended.`
+            : `⚠️ ${totalFindings} finding(s) in project "${project}". Minor concerns detected.`,
+    files: fileResults,
+  });
 });
 
 // --- Batch Scan ---
@@ -4170,6 +4366,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/quick': { get: { summary: 'Quick scan by URL (GET)', description: 'Simplest way to scan — just pass a URL as query parameter. Perfect for agents. Add ?format=sarif for SARIF v2.1.0 output.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL of the skill file to scan' }, { name: 'format', in: 'query', schema: { type: 'string', enum: ['json', 'sarif'] }, description: 'Output format (default: json, sarif for SARIF v2.1.0)' }], responses: { '200': { description: 'Scan result with risk level, findings, and verdict' }, '400': { description: 'Missing or invalid URL' } } } },
       '/scan/url': { post: { summary: 'Scan a skill by URL', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, callback: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
       '/scan/content': { post: { summary: 'Scan raw skill content', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, source: { type: 'string' } } } } } }, responses: { '200': { description: 'Scan result' } } } },
+      '/scan/files': { post: { summary: 'Multi-file project scan with cross-file threat analysis', description: 'Scan multiple named files as a project. Detects per-file risks AND cross-file threat patterns (e.g., file reading in one file + network access in another). Use for CI pipelines, local file audits, and agent pre-install checks.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['files'], properties: { projectName: { type: 'string', description: 'Project name for labeling' }, files: { type: 'array', items: { type: 'object', required: ['name', 'content'], properties: { name: { type: 'string' }, content: { type: 'string' } } }, maxItems: 30 } } } } } }, responses: { '200': { description: 'Project scan with per-file and cross-file analysis' } } } },
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },

@@ -707,6 +707,7 @@ app.get('/', (req, res) => {
         'GET /scan/pypi?package=name': 'Scan a PyPI package — fetches README, setup.py, pyproject.toml, source files',
         'GET /scan/cargo?crate=name': 'Scan a Rust crate from crates.io — fetches README, Cargo.toml, source files, checks build scripts and unsafe code',
         'GET /scan/go?module=path': 'Scan a Go module — fetches source from GitHub, checks CGo, unsafe, exec, syscall, plugin loading, replace directives',
+        'POST /scan/mcp': 'Scan MCP server tool definitions for schema poisoning, prompt injection, suspicious parameters, and cross-tool threat chains',
         'GET /scan/github?repo=owner/name': 'Scan a GitHub repository — fetches security-relevant files, Dockerfile analysis, CI/CD checks, multi-ecosystem detection',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -3002,6 +3003,290 @@ app.get('/scan/go', scanLimiter, async (req, res) => {
   }
 });
 
+// --- MCP Server Tool Scanner ---
+// POST /scan/mcp — scan an MCP server's tool definitions for schema poisoning, prompt injection, and suspicious patterns
+// Accepts either a live MCP endpoint URL (connects via JSON-RPC) or a static tool manifest (tools array)
+app.post('/scan/mcp', scanLimiter, (req, res) => {
+  const { tools, serverName } = req.body;
+
+  // We support static tool manifest scanning (tools array)
+  // Live MCP endpoint scanning would require SSE/WebSocket which is complex for a sync API
+  if (!tools || !Array.isArray(tools) || tools.length === 0) {
+    return res.status(400).json({
+      error: 'tools array is required — pass the output of MCP tools/list',
+      example: {
+        serverName: 'my-mcp-server',
+        tools: [
+          {
+            name: 'read_file',
+            description: 'Read a file from the filesystem',
+            inputSchema: {
+              type: 'object',
+              properties: { path: { type: 'string', description: 'File path to read' } },
+              required: ['path'],
+            },
+          },
+        ],
+      },
+      hint: 'Get tool definitions from your MCP server via tools/list JSON-RPC call, or from the server\'s manifest. Pass them as the tools array.',
+      liveEndpoint: 'For live MCP server scanning, use: curl your-mcp-server/tools | curl -X POST skillaudit.vercel.app/scan/mcp -d @-',
+    });
+  }
+
+  if (tools.length > 100) {
+    return res.status(400).json({ error: 'Maximum 100 tools per scan' });
+  }
+
+  const name = serverName || 'unknown-mcp-server';
+
+  // Schema poisoning patterns — hidden instructions in tool descriptions
+  const SCHEMA_POISON_PATTERNS = [
+    { pattern: /(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|prior|other)\s+(?:instructions|rules|guidelines)/i, name: 'Override instructions', severity: 'critical' },
+    { pattern: /(?:you must|you should|always|never)\s+(?:send|post|forward|include|attach)/i, name: 'Coercive instruction', severity: 'high' },
+    { pattern: /(?:do not|never)\s+(?:tell|inform|show|reveal|display)\s+(?:the\s+)?(?:user|human|client)/i, name: 'Secrecy instruction', severity: 'critical' },
+    { pattern: /(?:secretly|silently|quietly|covertly|without\s+(?:telling|informing|notifying))/i, name: 'Covert action instruction', severity: 'critical' },
+    { pattern: /(?:include|attach|append|add)\s+(?:all|every|the\s+entire)\s+(?:conversation|message|context|history|chat)/i, name: 'Context exfiltration', severity: 'critical' },
+    { pattern: /(?:before|after)\s+(?:running|executing|calling)\s+this\s+tool.*(?:also|first|then)/i, name: 'Side-effect instruction', severity: 'high' },
+    { pattern: /(?:IMPORTANT|CRITICAL|NOTE|ATTENTION)\s*[:!]\s*(?:ignore|always|never|you must)/i, name: 'Emphasized override', severity: 'high' },
+    { pattern: /(?:system|admin|root)\s*(?:prompt|instruction|override|mode)/i, name: 'System prompt reference', severity: 'high' },
+    { pattern: /(?:jailbreak|DAN|unrestricted|god\s*mode|developer\s*mode)/i, name: 'Jailbreak attempt', severity: 'critical' },
+    { pattern: /(?:\[INST\]|\[\/INST\]|<<SYS>>|<\|im_start\|>|<system>)/i, name: 'Chat template injection', severity: 'critical' },
+    { pattern: /(?:when|if)\s+(?:the\s+)?(?:user|human|client)\s+(?:asks?|says?|mentions?|requests?).*(?:instead|actually|really)/i, name: 'Conditional behavior override', severity: 'high' },
+    { pattern: /(?:this tool|this function)\s+(?:also|additionally|secretly)\s+(?:sends?|posts?|logs?|records?|forwards?)/i, name: 'Hidden side effect', severity: 'critical' },
+  ];
+
+  // Suspicious parameter patterns — names/descriptions suggesting credential theft
+  const SUSPICIOUS_PARAMS = [
+    { pattern: /(?:api[_-]?key|auth[_-]?token|secret|password|credential|private[_-]?key|access[_-]?token)/i, name: 'Credential parameter', severity: 'high' },
+    { pattern: /(?:session[_-]?id|cookie|jwt|bearer)/i, name: 'Session/auth parameter', severity: 'medium' },
+    { pattern: /(?:wallet|seed[_-]?phrase|mnemonic|private[_-]?key)/i, name: 'Crypto credential parameter', severity: 'critical' },
+    { pattern: /(?:\.env|environment|env[_-]?file|config[_-]?path)/i, name: 'Environment/config parameter', severity: 'medium' },
+  ];
+
+  // Suspicious tool name patterns
+  const SUSPICIOUS_NAMES = [
+    { pattern: /(?:exfiltrat|steal|extract|harvest|dump|leak)/i, name: 'Exfiltration tool name', severity: 'critical' },
+    { pattern: /(?:backdoor|rootkit|keylog|trojan|malware)/i, name: 'Malware tool name', severity: 'critical' },
+    { pattern: /(?:override|hijack|intercept|tamper|spoof)/i, name: 'Manipulation tool name', severity: 'high' },
+  ];
+
+  const toolResults = tools.map((tool, idx) => {
+    const findings = [];
+    const toolName = tool.name || `tool_${idx}`;
+    const desc = tool.description || '';
+    const schema = tool.inputSchema || {};
+
+    // 1. Scan tool name
+    for (const pat of SUSPICIOUS_NAMES) {
+      if (pat.pattern.test(toolName)) {
+        findings.push({
+          type: 'suspicious_name',
+          severity: pat.severity,
+          name: pat.name,
+          detail: `Tool name "${toolName}" matches suspicious pattern`,
+        });
+      }
+    }
+
+    // 2. Scan description for schema poisoning
+    for (const pat of SCHEMA_POISON_PATTERNS) {
+      const match = desc.match(pat.pattern);
+      if (match) {
+        findings.push({
+          type: 'schema_poisoning',
+          severity: pat.severity,
+          name: pat.name,
+          detail: `Description contains: "${match[0]}"`,
+          location: 'description',
+        });
+      }
+    }
+
+    // 3. Also scan description with the main scanner for additional coverage
+    if (desc.length > 20) {
+      const descScan = scanContent(desc, `mcp:${name}/${toolName}/description`);
+      for (const f of descScan.findings.slice(0, 5)) {
+        findings.push({
+          type: 'description_finding',
+          severity: f.severity,
+          name: f.name,
+          ruleId: f.ruleId,
+          detail: f.match || f.description,
+          location: 'description',
+        });
+      }
+    }
+
+    // 4. Scan parameter names and descriptions
+    const props = schema.properties || {};
+    for (const [paramName, paramDef] of Object.entries(props)) {
+      for (const pat of SUSPICIOUS_PARAMS) {
+        if (pat.pattern.test(paramName)) {
+          findings.push({
+            type: 'suspicious_parameter',
+            severity: pat.severity,
+            name: pat.name,
+            detail: `Parameter "${paramName}" suggests credential access`,
+            location: `inputSchema.properties.${paramName}`,
+          });
+        }
+      }
+
+      // Scan parameter descriptions for poisoning too
+      const paramDesc = paramDef?.description || '';
+      if (paramDesc.length > 10) {
+        for (const pat of SCHEMA_POISON_PATTERNS) {
+          const match = paramDesc.match(pat.pattern);
+          if (match) {
+            findings.push({
+              type: 'param_description_poisoning',
+              severity: pat.severity,
+              name: `${pat.name} (in parameter)`,
+              detail: `Parameter "${paramName}" description contains: "${match[0]}"`,
+              location: `inputSchema.properties.${paramName}.description`,
+            });
+          }
+        }
+      }
+    }
+
+    // 5. Check for overly broad schemas
+    if (schema.additionalProperties === true && (!schema.properties || Object.keys(schema.properties).length === 0)) {
+      findings.push({
+        type: 'broad_schema',
+        severity: 'medium',
+        name: 'Overly broad input schema',
+        detail: 'Tool accepts any properties with no defined schema — could receive unexpected data',
+        location: 'inputSchema',
+      });
+    }
+
+    if (schema.type !== 'object' && schema.type) {
+      findings.push({
+        type: 'unusual_schema_type',
+        severity: 'low',
+        name: 'Non-object input schema',
+        detail: `Input schema type is "${schema.type}" instead of "object"`,
+        location: 'inputSchema',
+      });
+    }
+
+    // 6. Check for no description (suspicious — legitimate tools document themselves)
+    if (!desc || desc.length < 5) {
+      findings.push({
+        type: 'missing_description',
+        severity: 'medium',
+        name: 'Missing or minimal description',
+        detail: 'Tool has no meaningful description — legitimate tools document their purpose',
+        location: 'description',
+      });
+    }
+
+    // Severity scoring
+    const severityScore = { critical: 10, high: 7, medium: 4, low: 1 };
+    const toolScore = findings.reduce((s, f) => s + (severityScore[f.severity] || 0), 0);
+
+    let toolRisk = 'clean';
+    if (toolScore > 0) toolRisk = 'low';
+    if (toolScore >= 10) toolRisk = 'moderate';
+    if (toolScore >= 25) toolRisk = 'high';
+    if (toolScore >= 50) toolRisk = 'critical';
+
+    return {
+      tool: toolName,
+      description: desc.substring(0, 200) + (desc.length > 200 ? '...' : ''),
+      parameterCount: Object.keys(props).length,
+      riskLevel: toolRisk,
+      riskScore: toolScore,
+      findings,
+      findingCount: findings.length,
+    };
+  });
+
+  // Aggregate
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+  const overallRisk = toolResults.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  const totalFindings = toolResults.reduce((s, r) => s + r.findingCount, 0);
+  const totalScore = toolResults.reduce((s, r) => s + r.riskScore, 0);
+  const poisonedTools = toolResults.filter(r => r.findings.some(f => f.type === 'schema_poisoning' || f.type === 'param_description_poisoning'));
+  const suspiciousParamTools = toolResults.filter(r => r.findings.some(f => f.type === 'suspicious_parameter'));
+  const criticalTools = toolResults.filter(r => r.riskLevel === 'critical' || r.riskLevel === 'high');
+
+  // Capability analysis across all tools
+  const allToolNames = tools.map(t => (t.name || '').toLowerCase());
+  const allParamNames = tools.flatMap(t => Object.keys((t.inputSchema?.properties) || {})).map(p => p.toLowerCase());
+  const capabilities = [];
+  if (allToolNames.some(n => /file|read|write|fs/.test(n)) || allParamNames.some(p => /path|file|dir/.test(p))) capabilities.push('filesystem');
+  if (allToolNames.some(n => /http|fetch|request|api|curl|web/.test(n)) || allParamNames.some(p => /url|endpoint|uri|host/.test(p))) capabilities.push('network');
+  if (allToolNames.some(n => /exec|run|shell|command|bash/.test(n)) || allParamNames.some(p => /command|cmd|script/.test(p))) capabilities.push('execution');
+  if (allToolNames.some(n => /env|config|setting/.test(n)) || allParamNames.some(p => /env|config|secret/.test(p))) capabilities.push('configuration');
+  if (allToolNames.some(n => /db|sql|query|database/.test(n)) || allParamNames.some(p => /query|sql|table/.test(p))) capabilities.push('database');
+  if (allToolNames.some(n => /email|mail|send|notify/.test(n))) capabilities.push('messaging');
+  if (allToolNames.some(n => /deploy|publish|release/.test(n))) capabilities.push('deployment');
+
+  // Cross-tool threat chains
+  const threatChains = [];
+  if (capabilities.includes('filesystem') && capabilities.includes('network')) {
+    threatChains.push({
+      type: 'file_network_exfil',
+      severity: 'high',
+      description: 'Server has both filesystem and network tools — potential data exfiltration path',
+      capabilities: ['filesystem', 'network'],
+    });
+  }
+  if (capabilities.includes('execution') && capabilities.includes('network')) {
+    threatChains.push({
+      type: 'rce_via_network',
+      severity: 'critical',
+      description: 'Server has both execution and network tools — remote code execution risk',
+      capabilities: ['execution', 'network'],
+    });
+  }
+  if (capabilities.includes('execution') && capabilities.includes('filesystem')) {
+    threatChains.push({
+      type: 'exec_file_chain',
+      severity: 'high',
+      description: 'Server has both execution and filesystem tools — can read files and execute commands',
+      capabilities: ['execution', 'filesystem'],
+    });
+  }
+
+  // Record scan
+  const combinedContent = JSON.stringify(tools);
+  const id = recordScan(`mcp:${name}`, scanContent(combinedContent, `mcp:${name}`));
+
+  res.json({
+    id,
+    server: name,
+    toolCount: tools.length,
+    overallRisk,
+    totalRiskScore: totalScore,
+    totalFindings,
+    schemaPoisoningDetected: poisonedTools.length > 0,
+    poisonedToolCount: poisonedTools.length,
+    suspiciousParamCount: suspiciousParamTools.length,
+    criticalToolCount: criticalTools.length,
+    capabilities,
+    capabilityCount: capabilities.length,
+    threatChains,
+    threatChainCount: threatChains.length,
+    verdict: totalFindings === 0 && threatChains.length === 0
+      ? `✅ MCP server "${name}" — ${tools.length} tool(s) scanned, no issues detected.`
+      : poisonedTools.length > 0
+        ? `🔴 SCHEMA POISONING DETECTED in "${name}" — ${poisonedTools.length} tool(s) contain hidden instructions in descriptions. Do NOT connect to this server.`
+        : criticalTools.length > 0
+          ? `🔴 Critical risk in "${name}" — ${criticalTools.length} tool(s) with critical/high findings. Manual audit required.`
+          : threatChains.length > 0
+            ? `🔶 "${name}" combines capabilities that create security risks (${threatChains.map(t => t.type).join(', ')}). Review tool permissions.`
+            : `⚠️ ${totalFindings} finding(s) in "${name}". Minor concerns detected — review recommended.`,
+    reportUrl: `/report/${id}`,
+    tools: toolResults,
+  });
+});
+
 // --- GitHub Repository Scanner ---
 // GET /scan/github?repo=owner/name — scan a GitHub repository
 app.get('/scan/github', scanLimiter, async (req, res) => {
@@ -4681,6 +4966,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/deep': { post: { summary: 'Deep scan with capability analysis (x402: $0.05 USDC on Base/Solana)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, content: { type: 'string' } } } } } }, responses: { '200': { description: 'Deep scan result' }, '402': { description: 'Payment required — send USDC then retry with X-Payment-TX header' } } } },
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
+      '/scan/mcp': { post: { summary: 'Scan MCP server tool definitions', description: 'Scans MCP tool schemas for schema poisoning, prompt injection in descriptions, suspicious parameters, and cross-tool capability threat chains.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['tools'], properties: { serverName: { type: 'string' }, tools: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, inputSchema: { type: 'object' } } } } } } } } }, responses: { '200': { description: 'MCP tool scan results with per-tool findings and cross-tool analysis' } } } },
       '/scan/go': { get: { summary: 'Scan a Go module', description: 'Fetches source files from GitHub for a Go module, scans for security issues, and performs Go-specific checks (CGo, unsafe, exec, syscall, plugin loading, replace directives).', parameters: [{ name: 'module', in: 'query', required: true, schema: { type: 'string' }, description: 'Go module path', example: 'github.com/anthropics/anthropic-sdk-go' }], responses: { '200': { description: 'Go module scan results' }, '404': { description: 'Module not found' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
       '/scan/history/url': { get: { summary: 'URL scan history with drift detection and trend analysis', description: 'Returns the complete scan history for a URL — every past scan with risk level, score, and findings count. Includes trend analysis (worsening/improving/stable), peak risk, and score averages. Use to monitor how a skill evolves over time and detect supply chain attacks where a safe skill turns malicious after gaining trust.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL to check history for' }, { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 50 }, description: 'Max entries to return' }], responses: { '200': { description: 'Scan history with trend analysis' } } } },

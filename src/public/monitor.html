@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkillAudit — URL Monitor</title>
+<meta name="description" content="Monitor AI agent skills for security changes. Get alerts when risk levels change. Continuous security monitoring for your skill supply chain.">
+<meta property="og:title" content="SkillAudit URL Monitor">
+<meta property="og:description" content="Continuous security monitoring for AI agent skills. Get alerts when risk levels change.">
+<meta property="og:url" content="https://skillaudit.vercel.app/monitor">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a26;--border:#2a2a3a;--text:#e0e0e8;--text2:#8888a0;--green:#22c55e;--yellow:#eab308;--orange:#f97316;--red:#ef4444;--purple:#a855f7;--blue:#3b82f6;--cyan:#06b6d4}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}
+
+.header{padding:24px 32px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.header h1{font-size:20px;font-weight:700;display:flex;align-items:center;gap:8px}
+.header h1 span{color:var(--cyan)}
+.header .meta{font-size:13px;color:var(--text2);display:flex;align-items:center;gap:16px}
+
+.container{max-width:1100px;margin:0 auto;padding:24px 32px}
+
+/* Auth bar */
+.auth-bar{display:flex;gap:12px;align-items:center;margin-bottom:24px;flex-wrap:wrap}
+.auth-bar input{flex:1;min-width:200px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none;font-family:monospace}
+.auth-bar input:focus{border-color:var(--cyan)}
+.auth-bar input::placeholder{color:var(--text2)}
+.auth-bar button{padding:10px 20px;background:var(--cyan);color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;white-space:nowrap}
+.auth-bar button:hover{opacity:.9}
+.auth-bar button:disabled{opacity:.5;cursor:not-allowed}
+.auth-status{font-size:12px;color:var(--text2)}
+.auth-status.ok{color:var(--green)}
+.auth-status.err{color:var(--red)}
+
+/* Stats row */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+.stat-card .num{font-size:28px;font-weight:700;line-height:1.2}
+.stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-top:4px}
+
+/* Add form */
+.add-form{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+.add-form input{flex:1;min-width:200px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none}
+.add-form input:focus{border-color:var(--cyan)}
+.add-form input::placeholder{color:var(--text2)}
+.add-form .label-input{max-width:180px}
+.add-form button{padding:10px 20px;background:var(--green);color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;white-space:nowrap}
+.add-form button:hover{opacity:.9}
+
+/* Action bar */
+.action-bar{display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap}
+.action-bar button{padding:8px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13px;font-weight:500}
+.action-bar button:hover{border-color:var(--cyan);color:var(--cyan)}
+.action-bar button.active{background:var(--cyan);color:#000;border-color:var(--cyan)}
+.action-bar .spacer{flex:1}
+.action-bar .rescan-btn{background:var(--blue);color:#fff;border-color:var(--blue)}
+.action-bar .rescan-btn:hover{opacity:.9}
+
+/* Watchlist table */
+.watch-list{list-style:none}
+.watch-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;transition:border-color .2s}
+.watch-item:hover{border-color:var(--cyan)}
+.watch-item .risk-badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;text-transform:uppercase;min-width:70px;text-align:center;flex-shrink:0}
+.risk-badge.clean{background:rgba(34,197,94,.15);color:var(--green)}
+.risk-badge.low{background:rgba(234,179,8,.15);color:var(--yellow)}
+.risk-badge.moderate{background:rgba(249,115,22,.15);color:var(--orange)}
+.risk-badge.high{background:rgba(239,68,68,.15);color:var(--red)}
+.risk-badge.critical{background:rgba(168,85,247,.15);color:var(--purple)}
+.risk-badge.unknown{background:rgba(136,136,160,.15);color:var(--text2)}
+.watch-info{flex:1;min-width:0}
+.watch-info .url{font-size:14px;font-weight:500;word-break:break-all}
+.watch-info .label-tag{font-size:11px;background:var(--surface2);color:var(--cyan);padding:2px 8px;border-radius:4px;margin-left:8px;font-weight:500}
+.watch-info .meta-row{font-size:12px;color:var(--text2);margin-top:4px;display:flex;gap:16px;flex-wrap:wrap}
+.watch-score{font-size:20px;font-weight:700;min-width:50px;text-align:center;flex-shrink:0}
+.watch-actions{display:flex;gap:8px;flex-shrink:0}
+.watch-actions button{padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text2);cursor:pointer;font-size:12px}
+.watch-actions button:hover{border-color:var(--red);color:var(--red)}
+.watch-actions .view-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+
+/* Alerts section */
+.alerts-section{margin-top:32px}
+.alerts-section h2{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.alert-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.alert-item .arrow{font-size:16px;flex-shrink:0}
+.alert-item .alert-info{flex:1;min-width:0}
+.alert-item .alert-info .url{font-size:13px;font-weight:500;word-break:break-all}
+.alert-item .alert-info .detail{font-size:12px;color:var(--text2);margin-top:2px}
+.alert-item .time{font-size:11px;color:var(--text2);flex-shrink:0}
+.worsened{border-left:3px solid var(--red)}
+.improved{border-left:3px solid var(--green)}
+
+.empty{color:var(--text2);font-size:14px;text-align:center;padding:40px 20px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.empty .icon{font-size:40px;margin-bottom:12px}
+
+.loading{color:var(--text2);text-align:center;padding:30px;font-size:14px}
+
+.footer{padding:24px 32px;text-align:center;color:var(--text2);font-size:12px;border-top:1px solid var(--border);margin-top:32px}
+
+.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:999;animation:slideIn .3s ease;max-width:360px}
+.toast.success{background:var(--green);color:#000}
+.toast.error{background:var(--red);color:#fff}
+@keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🛡️ <span>SkillAudit</span> URL Monitor</h1>
+  <div class="meta">
+    <a href="/">← Home</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/docs">Docs</a>
+  </div>
+</div>
+
+<div class="container">
+  <!-- API Key -->
+  <div class="auth-bar">
+    <input type="password" id="apiKey" placeholder="Enter your API key (sk-skillaudit-...)" autocomplete="off">
+    <button onclick="connect()">Connect</button>
+    <span id="authStatus" class="auth-status"></span>
+  </div>
+
+  <!-- Content (hidden until authenticated) -->
+  <div id="content" style="display:none">
+    <!-- Stats -->
+    <div class="stats" id="stats"></div>
+
+    <!-- Add URL form -->
+    <div class="add-form">
+      <input type="url" id="addUrl" placeholder="https://example.com/SKILL.md">
+      <input type="text" id="addLabel" class="label-input" placeholder="Label (optional)">
+      <button onclick="addUrl()">+ Add to Watchlist</button>
+    </div>
+
+    <!-- Action bar -->
+    <div class="action-bar">
+      <button class="active" onclick="setView('list',this)">📋 Watchlist</button>
+      <button onclick="setView('alerts',this)">🔔 Alerts</button>
+      <div class="spacer"></div>
+      <button class="rescan-btn" onclick="rescanAll()">🔄 Re-scan All</button>
+    </div>
+
+    <!-- Watchlist view -->
+    <div id="listView">
+      <ul class="watch-list" id="watchList"></ul>
+    </div>
+
+    <!-- Alerts view -->
+    <div id="alertsView" style="display:none">
+      <div id="alertsList"></div>
+    </div>
+  </div>
+
+  <!-- Unauthenticated state -->
+  <div id="noAuth">
+    <div class="empty">
+      <div class="icon">🔐</div>
+      <p style="font-size:16px;font-weight:600;margin-bottom:8px">Enter your API key to access the URL Monitor</p>
+      <p style="color:var(--text2);font-size:13px;max-width:500px;margin:0 auto">
+        The URL Monitor lets you track skills for security changes over time. Add URLs to your watchlist, get alerts when risk levels change, and re-scan on demand.
+      </p>
+      <p style="color:var(--text2);font-size:12px;margin-top:16px">
+        Need an API key? <a href="/docs">Check the docs</a> or use <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">sk-skillaudit-dev</code> to try it out.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <a href="/">SkillAudit</a> · <a href="/dashboard">Dashboard</a> · <a href="/docs">API Docs</a> · <a href="/playground">Playground</a> · <a href="/rules">Rules</a> · <a href="/integrations">Integrations</a>
+</div>
+
+<script>
+const API = '';
+let key = '';
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function toast(msg, type='success') {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+function riskColor(r) {
+  return {clean:'var(--green)',low:'var(--yellow)',moderate:'var(--orange)',high:'var(--red)',critical:'var(--purple)'}[r] || 'var(--text2)';
+}
+
+async function api(method, path, body) {
+  const sep = path.includes('?') ? '&' : '?';
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${API}${path}${sep}key=${encodeURIComponent(key)}`, opts);
+  return res.json();
+}
+
+async function connect() {
+  key = document.getElementById('apiKey').value.trim();
+  if (!key) return;
+  const st = document.getElementById('authStatus');
+  st.textContent = 'Connecting...';
+  st.className = 'auth-status';
+  try {
+    const data = await api('GET', '/watchlist');
+    if (data.error) {
+      st.textContent = '✗ ' + data.error;
+      st.className = 'auth-status err';
+      return;
+    }
+    st.textContent = '✓ Connected';
+    st.className = 'auth-status ok';
+    document.getElementById('noAuth').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    // Save key for session
+    sessionStorage.setItem('sa_key', key);
+    await loadAll();
+  } catch (e) {
+    st.textContent = '✗ Connection failed';
+    st.className = 'auth-status err';
+  }
+}
+
+async function loadAll() {
+  await Promise.all([loadWatchlist(), loadAlerts()]);
+}
+
+async function loadWatchlist() {
+  const data = await api('GET', '/watchlist');
+  const items = data.watchlist || [];
+  renderStats(items);
+  renderWatchlist(items);
+}
+
+async function loadAlerts() {
+  const data = await api('GET', '/watchlist/alerts');
+  renderAlerts(data.alerts || []);
+}
+
+function renderStats(items) {
+  const el = document.getElementById('stats');
+  const total = items.length;
+  const risks = { clean:0, low:0, moderate:0, high:0, critical:0 };
+  items.forEach(i => { const r = i.currentRisk || i.riskLevel || 'unknown'; if (risks[r] !== undefined) risks[r]++; });
+  const atRisk = risks.high + risks.critical;
+  const score = items.reduce((s, i) => s + (i.currentScore || i.riskScore || 0), 0);
+  el.innerHTML = `
+    <div class="stat-card"><div class="num">${total}</div><div class="label">Monitored</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--green)">${risks.clean}</div><div class="label">Clean</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--orange)">${risks.moderate + risks.low}</div><div class="label">Warnings</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--red)">${atRisk}</div><div class="label">At Risk</div></div>
+    <div class="stat-card"><div class="num" style="color:${score > 50 ? 'var(--red)' : score > 10 ? 'var(--orange)' : 'var(--green)'}">${score}</div><div class="label">Total Score</div></div>
+  `;
+}
+
+function renderWatchlist(items) {
+  const el = document.getElementById('watchList');
+  if (items.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="icon">📭</div><p>No URLs on your watchlist yet.</p><p style="color:var(--text2);font-size:13px;margin-top:8px">Add a URL above to start monitoring.</p></div>';
+    return;
+  }
+  el.innerHTML = items.map(item => {
+    const risk = item.currentRisk || item.riskLevel || 'unknown';
+    const score = item.currentScore || item.riskScore || 0;
+    const url = item.url || '';
+    const label = item.label || '';
+    const lastScan = item.lastScannedAt || item.addedAt || '';
+    const findings = item.currentFindings ?? item.findings ?? '?';
+    const scanId = item.lastScanId || item.scanId || '';
+    return `<li class="watch-item">
+      <div class="risk-badge ${esc(risk)}">${esc(risk)}</div>
+      <div class="watch-info">
+        <div class="url">${esc(url)}${label ? `<span class="label-tag">${esc(label)}</span>` : ''}</div>
+        <div class="meta-row">
+          <span>Score: <b style="color:${riskColor(risk)}">${score}</b></span>
+          <span>Findings: <b>${findings}</b></span>
+          <span>Last scan: ${timeAgo(lastScan)}</span>
+          ${item.alerts && item.alerts.length ? `<span style="color:var(--orange)">⚠ ${item.alerts.length} alert(s)</span>` : ''}
+        </div>
+      </div>
+      <div class="watch-score" style="color:${riskColor(risk)}">${score}</div>
+      <div class="watch-actions">
+        ${scanId ? `<button class="view-btn" onclick="window.open('/report/${esc(scanId)}','_blank')">📄 Report</button>` : ''}
+        <button onclick="removeItem('${esc(item.id)}','${esc(url)}')">🗑️</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function renderAlerts(alerts) {
+  const el = document.getElementById('alertsList');
+  if (alerts.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="icon">🔔</div><p>No alerts yet.</p><p style="color:var(--text2);font-size:13px;margin-top:8px">Alerts appear when a watched URL\'s risk level changes after a re-scan.</p></div>';
+    return;
+  }
+  el.innerHTML = alerts.sort((a, b) => new Date(b.detectedAt || 0) - new Date(a.detectedAt || 0)).slice(0, 50).map(a => {
+    const dir = (a.direction || '').includes('worse') ? 'worsened' : 'improved';
+    const arrow = dir === 'worsened' ? '📈' : '📉';
+    const prev = a.previousRisk || '?';
+    const curr = a.currentRisk || a.newRisk || '?';
+    return `<div class="alert-item ${dir}">
+      <span class="arrow">${arrow}</span>
+      <div class="alert-info">
+        <div class="url">${esc(a.url || '')}</div>
+        <div class="detail">
+          <span class="risk-badge ${esc(prev)}" style="font-size:10px;padding:1px 6px">${esc(prev)}</span>
+          → <span class="risk-badge ${esc(curr)}" style="font-size:10px;padding:1px 6px">${esc(curr)}</span>
+          ${a.scoreDelta ? ` (${a.scoreDelta > 0 ? '+' : ''}${a.scoreDelta} pts)` : ''}
+        </div>
+      </div>
+      <span class="time">${timeAgo(a.detectedAt)}</span>
+    </div>`;
+  }).join('');
+}
+
+function setView(view, btn) {
+  document.getElementById('listView').style.display = view === 'list' ? '' : 'none';
+  document.getElementById('alertsView').style.display = view === 'alerts' ? '' : 'none';
+  document.querySelectorAll('.action-bar button:not(.rescan-btn)').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+async function addUrl() {
+  const url = document.getElementById('addUrl').value.trim();
+  const label = document.getElementById('addLabel').value.trim();
+  if (!url) return;
+  try {
+    const data = await api('POST', '/watchlist', { url, label: label || undefined });
+    if (data.error) { toast(data.error, 'error'); return; }
+    toast(`Added ${url.split('/').pop() || url}`);
+    document.getElementById('addUrl').value = '';
+    document.getElementById('addLabel').value = '';
+    await loadWatchlist();
+  } catch (e) { toast('Failed to add URL', 'error'); }
+}
+
+async function removeItem(id, url) {
+  if (!confirm(`Remove ${url} from watchlist?`)) return;
+  try {
+    await api('DELETE', `/watchlist/${id}`);
+    toast('Removed from watchlist');
+    await loadWatchlist();
+  } catch (e) { toast('Failed to remove', 'error'); }
+}
+
+async function rescanAll() {
+  toast('Re-scanning all watched URLs...');
+  try {
+    const data = await api('POST', '/watchlist/check', {});
+    if (data.error) { toast(data.error, 'error'); return; }
+    const changes = (data.results || []).filter(r => r.riskChanged);
+    if (changes.length > 0) {
+      toast(`Done! ${changes.length} URL(s) changed risk level.`);
+    } else {
+      toast(`Done! All ${data.checked || '?'} URL(s) stable.`);
+    }
+    await loadAll();
+  } catch (e) { toast('Re-scan failed', 'error'); }
+}
+
+// Auto-connect if key in session storage
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = sessionStorage.getItem('sa_key');
+  if (saved) {
+    document.getElementById('apiKey').value = saved;
+    connect();
+  }
+});
+</script>
+</body>
+</html>

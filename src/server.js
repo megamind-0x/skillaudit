@@ -749,6 +749,7 @@ app.get('/', (req, res) => {
         'GET /playground': 'Interactive security testing sandbox — type code, see which rules fire in real-time',
         'GET /compare': 'Visual scan comparison — diff two skill versions side-by-side, see new/resolved findings and risk delta',
         'GET /integrations': 'Copy-paste integration guides for LangChain, CrewAI, OpenAI, AutoGen, GitHub Actions, MCP, and more',
+        'GET /monitor': 'URL Monitor dashboard — visual watchlist management with risk alerts and re-scan on demand',
         'GET /remediation': 'Remediation guidance for all detection rules — actionable fix advice for every finding',
         'GET /remediation/:ruleId': 'Remediation guidance for a specific rule — how to fix a finding',
         'GET /health': 'Health check',
@@ -784,6 +785,10 @@ app.get('/compare', (req, res) => {
 
 app.get('/integrations', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'integrations.html'));
+});
+
+app.get('/monitor', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'monitor.html'));
 });
 
 app.get('/health', (req, res) => {

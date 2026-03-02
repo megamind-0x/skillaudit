@@ -1,6 +1,6 @@
 {
   "name": "skillaudit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Security scanner for AI agent skills — scan SKILL.md files for threats, exfiltration, and malicious patterns",
   "main": "src/scanner.js",
   "bin": {

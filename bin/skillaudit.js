@@ -23,6 +23,11 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     skillaudit <url|file|dir>         Scan a skill (default command)
     skillaudit gate <url>             Pre-install gate check (allow/deny)
     skillaudit manifest <file>        Scan MCP tool manifest JSON
+    skillaudit npm <package>          Scan an npm package
+    skillaudit pypi <package>         Scan a PyPI package
+    skillaudit cargo <crate>          Scan a Rust crate from crates.io
+    skillaudit go <module>            Scan a Go module
+    skillaudit github <owner/repo>    Scan a GitHub repository
     skillaudit --api <url>            Use hosted API instead of local scan
     skillaudit --mcp                  Start as MCP server (stdio, JSON-RPC)
     skillaudit --version              Show version
@@ -33,6 +38,11 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     skillaudit gate https://example.com/SKILL.md
     skillaudit gate https://example.com/SKILL.md --threshold high
     skillaudit manifest tools.json
+    skillaudit npm @modelcontextprotocol/sdk
+    skillaudit pypi langchain
+    skillaudit cargo rmcp
+    skillaudit go github.com/anthropics/anthropic-sdk-go
+    skillaudit github modelcontextprotocol/servers
     skillaudit SKILL.md --fail-on moderate
     skillaudit SKILL.md --json
     skillaudit SKILL.md --markdown
@@ -73,7 +83,7 @@ const failOn = getArgValue('--fail-on');
 const threshold = getArgValue('--threshold') || 'moderate';
 
 // Subcommand detection
-const subcommands = ['gate', 'manifest'];
+const subcommands = ['gate', 'manifest', 'npm', 'pypi', 'cargo', 'go', 'github'];
 const subcommand = subcommands.includes(args[0]) ? args[0] : null;
 const positionalArgs = args.filter(a => !a.startsWith('-') && !subcommands.includes(a) && a !== failOn && a !== threshold && a !== getArgValue('--fail-on') && a !== getArgValue('--threshold'));
 const target = subcommand ? args.find((a, i) => i > 0 && !a.startsWith('-') && a !== failOn && a !== threshold) : positionalArgs[0];
@@ -409,6 +419,127 @@ function displayManifest(tools, results) {
   return totalFindings;
 }
 
+// ── Package/repo scan display ─────────────────────────────
+function displayPackageScan(result, type) {
+  if (jsonOutput) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const name = result.package || result.crate || result.module || result.repo || 'unknown';
+  const version = result.version || '';
+  const risk = (result.overallRisk || 'unknown').toLowerCase();
+  const riskColor = RISK_COLORS[risk] || c.yellow;
+  const score = result.totalRiskScore ?? 0;
+  const findings = result.totalFindings ?? 0;
+  const critical = result.totalCritical ?? 0;
+  const high = result.totalHigh ?? 0;
+  const files = result.filesScanned ?? result.filesDiscovered ?? 0;
+  const verdict = result.verdict || '';
+
+  if (markdownOutput) {
+    const riskEmoji = { clean: '✅', low: '🟢', moderate: '🟡', high: '🔴', critical: '💀' };
+    console.log(`## ${riskEmoji[risk] || '❓'} SkillAudit ${type}: ${name}${version ? `@${version}` : ''}`);
+    console.log('');
+    console.log(`| Metric | Value |`);
+    console.log(`|--------|-------|`);
+    console.log(`| Risk | **${risk.toUpperCase()}** |`);
+    console.log(`| Score | ${score} |`);
+    console.log(`| Findings | ${findings} (${critical} critical, ${high} high) |`);
+    console.log(`| Files Scanned | ${files} |`);
+    console.log('');
+    if (verdict) console.log(`> ${verdict}`);
+    console.log('');
+
+    // Warnings
+    const warnings = result.packageWarnings || result.cargoWarnings || result.goWarnings || result.repoWarnings || [];
+    if (warnings.length > 0) {
+      console.log('### Warnings');
+      for (const w of warnings) {
+        const icon = w.severity === 'high' ? '🔴' : w.severity === 'medium' ? '🟡' : '🟢';
+        console.log(`- ${icon} ${w.description || w.type}`);
+      }
+      console.log('');
+    }
+
+    // File results
+    const fileResults = result.files || [];
+    if (fileResults.length > 0) {
+      console.log('### Files');
+      for (const f of fileResults) {
+        const fIcon = f.riskLevel === 'clean' ? '✅' : f.riskLevel === 'low' ? '🟢' : '🔴';
+        console.log(`- ${fIcon} **${f.file}** — ${f.riskLevel} (${f.findings} findings)`);
+      }
+    }
+    console.log(`\n<sub>Scanned by [SkillAudit](https://skillaudit.vercel.app) v${VERSION}</sub>`);
+    return;
+  }
+
+  console.log('');
+  console.log(`${c.bold}  SkillAudit ${type} Scan${c.reset}`);
+  console.log(`${c.gray}  ${'─'.repeat(44)}${c.reset}`);
+  console.log(`  Package:   ${c.bold}${name}${version ? `${c.gray}@${version}` : ''}${c.reset}`);
+  console.log(`  Risk:      ${riskColor}${c.bold}${risk.toUpperCase()}${c.reset}`);
+  console.log(`  Score:     ${riskColor}${score}/100${c.reset}`);
+  console.log(`  Findings:  ${findings} total ${critical > 0 ? `${c.red}(${critical} critical)${c.reset} ` : ''}${high > 0 ? `${c.red}(${high} high)${c.reset}` : ''}`);
+  console.log(`  Files:     ${files} scanned`);
+  console.log('');
+
+  // Warnings
+  const warnings = result.packageWarnings || result.cargoWarnings || result.goWarnings || result.repoWarnings || [];
+  if (warnings.length > 0) {
+    console.log(`${c.bold}  Warnings${c.reset}`);
+    console.log(`${c.gray}  ${'─'.repeat(44)}${c.reset}`);
+    for (const w of warnings) {
+      const sevColor = w.severity === 'high' ? c.red : w.severity === 'medium' ? c.yellow : c.cyan;
+      const icon = w.severity === 'high' ? '🔴' : w.severity === 'medium' ? '⚠' : 'ℹ';
+      console.log(`  ${icon} ${sevColor}[${(w.severity || 'medium').toUpperCase()}]${c.reset} ${w.description || w.type}`);
+    }
+    console.log('');
+  }
+
+  // File breakdown
+  const fileResults = result.files || [];
+  if (fileResults.length > 0) {
+    console.log(`${c.bold}  Files${c.reset}`);
+    console.log(`${c.gray}  ${'─'.repeat(44)}${c.reset}`);
+    for (const f of fileResults) {
+      const fRisk = (f.riskLevel || 'unknown').toLowerCase();
+      const fColor = RISK_COLORS[fRisk] || c.gray;
+      const icon = fRisk === 'clean' ? `${c.green}✓` : fRisk === 'low' ? `${c.cyan}~` : `${c.red}✗`;
+      console.log(`  ${icon}${c.reset} ${f.file} ${fColor}${fRisk}${c.reset}${f.findings > 0 ? ` ${c.gray}(${f.findings} findings)${c.reset}` : ''}`);
+    }
+    console.log('');
+  }
+
+  // Verdict
+  if (verdict) {
+    console.log(`  ${verdict}`);
+    console.log('');
+  }
+
+  console.log(`  ${c.gray}Scanned by SkillAudit v${VERSION} — https://skillaudit.vercel.app${c.reset}\n`);
+}
+
+// ── Fetch JSON from API ───────────────────────────────────
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { headers: { 'User-Agent': `SkillAudit-CLI/${VERSION}`, Accept: 'application/json' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchJson(res.headers.location).then(resolve).catch(reject);
+      }
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch { reject(new Error(`Invalid JSON from ${url}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')); });
+  });
+}
+
 // ── Main ──────────────────────────────────────────────────
 async function main() {
   const isUrl = /^https?:\/\//.test(target);
@@ -490,6 +621,59 @@ async function main() {
       const poisonCount = displayManifest(tools);
       const exitCode = (typeof poisonCount === 'number' && poisonCount > 0) ? 1 : 0;
       process.exit(exitCode);
+    }
+
+    // ── Package/repo subcommands (use hosted API) ──
+    const packageCommands = { npm: 'npm', pypi: 'pypi', cargo: 'cargo', go: 'go', github: 'github' };
+    if (packageCommands[subcommand]) {
+      if (!target) throw new Error(`${subcommand} requires a target (e.g., skillaudit ${subcommand} ${subcommand === 'npm' ? 'express' : subcommand === 'pypi' ? 'langchain' : subcommand === 'cargo' ? 'rmcp' : subcommand === 'go' ? 'github.com/user/repo' : 'owner/repo'})`);
+
+      const base = 'https://skillaudit.vercel.app';
+      let apiUrl;
+      let label;
+      switch (subcommand) {
+        case 'npm':
+          apiUrl = `${base}/scan/npm?package=${encodeURIComponent(target)}`;
+          label = 'npm';
+          break;
+        case 'pypi':
+          apiUrl = `${base}/scan/pypi?package=${encodeURIComponent(target)}`;
+          label = 'PyPI';
+          break;
+        case 'cargo':
+          apiUrl = `${base}/scan/cargo?crate=${encodeURIComponent(target)}`;
+          label = 'Cargo';
+          break;
+        case 'go':
+          apiUrl = `${base}/scan/go?module=${encodeURIComponent(target)}`;
+          label = 'Go';
+          break;
+        case 'github':
+          apiUrl = `${base}/scan/github?repo=${encodeURIComponent(target)}`;
+          label = 'GitHub';
+          break;
+      }
+
+      const result = await fetchJson(apiUrl);
+      clearInterval(spin);
+      if (!noColor) process.stdout.write('\r  \r');
+
+      if (result.error) {
+        console.error(`\n  ${c.red}Error: ${result.error}${c.reset}`);
+        if (result.hint) console.error(`  ${c.gray}${result.hint}${c.reset}`);
+        console.error('');
+        process.exit(2);
+      }
+
+      displayPackageScan(result, label);
+
+      // Exit code based on risk
+      const risk = (result.overallRisk || '').toLowerCase();
+      if (failOn) {
+        const riskOrder = { clean: 0, low: 1, moderate: 2, high: 3, critical: 4 };
+        process.exit((riskOrder[risk] ?? 0) >= (riskOrder[failOn] ?? 2) ? 1 : 0);
+      }
+      process.exit(risk === 'high' || risk === 'critical' ? 1 : 0);
     }
 
     // ── Default: scan ──

@@ -830,6 +830,54 @@
         "com\\.sun\\.jndi"
       ],
       "remediation": "Sanitize all user input before logging — strip JNDI lookup strings, newlines, and control characters. Update log4j to 2.17.1+. Set log4j2.formatMsgNoLookups=true. Never log raw request data without sanitization."
+    },
+    {
+      "id": "JWT_VULN",
+      "severity": "critical",
+      "category": "authentication",
+      "name": "JWT security vulnerability",
+      "description": "Skill contains insecure JWT handling — algorithm confusion attacks, missing verification, hardcoded tokens, or disabled signature validation can lead to authentication bypass and privilege escalation",
+      "patterns": [
+        "alg['\"]?\\s*[:=]\\s*['\"]none['\"]",
+        "algorithm[s]?\\s*[:=]\\s*\\[?\\s*['\"]none['\"]",
+        "jwt\\.decode\\s*\\((?!.*verify)",
+        "jwt\\.decode\\s*\\(.*verify\\s*[:=]\\s*(?:false|False|0)",
+        "jose\\.(?:decode|parse)\\s*\\((?!.*verify)",
+        "jsonwebtoken.*(?:verify\\s*[:=]\\s*false|algorithms.*none)",
+        "JWT_SECRET\\s*[:=]\\s*['\"][^'\"]{1,15}['\"]",
+        "jwt[_-]?secret\\s*[:=]\\s*['\"][^'\"]{1,15}['\"]",
+        "(?:sign|verify)\\s*\\(.*['\"](?:HS(?:256|384|512))['\"].*(?:publicKey|public[_-]?key|rsaPublic|ecPublic)",
+        "algorithms?\\s*[:=]\\s*\\[\\s*['\"]HS256['\"]\\s*,\\s*['\"]RS256['\"]",
+        "(?:expiresIn|exp)\\s*[:=]\\s*(?:null|undefined|false|0|['\"]['\"])",
+        "ignoreExpiration\\s*[:=]\\s*(?:true|True|1)",
+        "ignoreNotBefore\\s*[:=]\\s*(?:true|True|1)",
+        "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]*"
+      ],
+      "remediation": "Always verify JWT signatures before trusting claims. Never allow algorithm \"none\". Use RS256 or ES256 with proper key management — avoid HS256 with short or hardcoded secrets. Set and validate expiration (exp) and not-before (nbf) claims. Never decode JWTs without verification in production code. Remove any hardcoded JWT tokens from source."
+    },
+    {
+      "id": "INSECURE_CRYPTO",
+      "severity": "high",
+      "category": "cryptography",
+      "name": "Insecure cryptographic practice",
+      "description": "Skill uses broken or weak cryptographic primitives — MD5/SHA1 for security purposes, Math.random() for tokens, weak key sizes, or insecure cipher modes that can be exploited to forge data, predict tokens, or decrypt communications",
+      "patterns": [
+        "createHash\\s*\\(\\s*['\"]md5['\"]\\s*\\)",
+        "hashlib\\.md5\\s*\\(",
+        "MD5\\.(?:Create|ComputeHash|HashData)",
+        "MessageDigest\\.getInstance\\s*\\(\\s*['\"]MD5['\"]",
+        "createHash\\s*\\(\\s*['\"]sha1['\"]\\s*\\)",
+        "hashlib\\.sha1\\s*\\(",
+        "MessageDigest\\.getInstance\\s*\\(\\s*['\"]SHA-?1['\"]",
+        "Math\\.random\\s*\\(\\).*(?:token|secret|key|password|nonce|salt|session|csrf|otp|code)",
+        "(?:token|secret|key|password|nonce|salt|session|csrf|otp).*Math\\.random\\s*\\(\\)",
+        "random\\.random\\s*\\(\\).*(?:token|secret|key|password|nonce|salt)",
+        "createCipher\\s*\\(\\s*['\"](?:aes-(?:128|192|256)-ecb|des|rc4|rc2|blowfish)['\"]",
+        "DES(?:ede)?\\s*[:=]|Blowfish\\s*[:=]|RC4\\s*[:=]",
+        "(?:key[_-]?(?:size|length|bits)|keySize|keyLen)\\s*[:=]\\s*(?:56|64|128|40|512)\\b",
+        "createCipheriv?\\s*\\(.*['\"]\\s*,\\s*['\"][0-9a-fA-F]{16,64}['\"]"
+      ],
+      "remediation": "Use SHA-256 or SHA-3 instead of MD5/SHA1 for any security purpose. Use crypto.randomBytes() or secrets.token_hex() instead of Math.random()/random.random() for tokens, keys, or security-sensitive values. Use AES-GCM or ChaCha20-Poly1305 instead of ECB, DES, RC4, or Blowfish. Use minimum 2048-bit RSA or 256-bit ECC keys. Never hardcode encryption keys in source."
     }
   ]
 }

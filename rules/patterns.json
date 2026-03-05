@@ -878,6 +878,53 @@
         "createCipheriv?\\s*\\(.*['\"]\\s*,\\s*['\"][0-9a-fA-F]{16,64}['\"]"
       ],
       "remediation": "Use SHA-256 or SHA-3 instead of MD5/SHA1 for any security purpose. Use crypto.randomBytes() or secrets.token_hex() instead of Math.random()/random.random() for tokens, keys, or security-sensitive values. Use AES-GCM or ChaCha20-Poly1305 instead of ECB, DES, RC4, or Blowfish. Use minimum 2048-bit RSA or 256-bit ECC keys. Never hardcode encryption keys in source."
+    },
+    {
+      "id": "SQL_INJECTION",
+      "severity": "critical",
+      "category": "injection",
+      "name": "SQL injection vulnerability",
+      "description": "Skill constructs SQL queries using string concatenation or template literals with user input — allows attackers to read, modify, or delete database contents, bypass authentication, or execute OS commands via xp_cmdshell/LOAD_FILE",
+      "patterns": [
+        "(?:query|execute|exec|run)\\s*\\(\\s*[`'\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\\s[^;]*\\$\\{",
+        "(?:query|execute|exec|run)\\s*\\(\\s*['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)\\s[^;]*['\"]\\s*\\+\\s*(?:req|request|params|query|body|input|user|args)",
+        "(?:query|execute|exec|run)\\s*\\(\\s*f['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)\\s",
+        "(?:query|execute|exec|run)\\s*\\(\\s*['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)\\s[^;]*%s",
+        "(?:query|execute|exec|run)\\s*\\(\\s*['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)\\s[^;]*\\.format\\s*\\(",
+        "cursor\\.execute\\s*\\(\\s*f['\"]",
+        "cursor\\.execute\\s*\\(\\s*['\"].*%s.*['\"]\\s*%\\s*(?!\\()",
+        "(?:WHERE|AND|OR)\\s+\\w+\\s*=\\s*['\"]?\\s*\\+\\s*(?:req|request|params|query|body|input|args)",
+        "(?:WHERE|AND|OR)\\s+\\w+\\s*=\\s*['\"]?\\s*\\$\\{(?:req|request|params|query|body|input|args)",
+        "raw\\s*\\(\\s*f['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)",
+        "(?:rawQuery|sequelize\\.query|knex\\.raw|prisma\\.\\$queryRaw)\\s*\\(\\s*[`'\"].*\\$\\{",
+        "String\\.format\\s*\\(\\s*['\"]\\s*(?:SELECT|INSERT|UPDATE|DELETE)\\s",
+        "(?:Statement|PreparedStatement).*(?:execute(?:Query|Update)).*\\+\\s*(?:request|param|input)",
+        "sql\\s*[:=]\\s*[f`'\"].*(?:SELECT|INSERT|UPDATE|DELETE).*(?:\\$\\{|%s|\\.format)"
+      ],
+      "remediation": "NEVER construct SQL queries with string concatenation, template literals, or f-strings using user input. Use parameterized queries (prepared statements) in every case: Node.js db.query('SELECT * FROM users WHERE id = $1', [userId]); Python cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,)); Java PreparedStatement with setString(). Use an ORM (Sequelize, SQLAlchemy, Prisma) which parameterizes by default. If raw queries are unavoidable, use the ORM's parameterized raw query method."
+    },
+    {
+      "id": "XSS_INJECTION",
+      "severity": "high",
+      "category": "injection",
+      "name": "Cross-site scripting (XSS) vulnerability",
+      "description": "Skill inserts user-controlled input into HTML output without sanitization — allows attackers to execute JavaScript in victims' browsers, steal cookies/sessions, redirect users, or deface pages",
+      "patterns": [
+        "innerHTML\\s*=\\s*(?:req|request|params|query|body|input|user|args|data)",
+        "innerHTML\\s*=\\s*[`'\"].*\\$\\{(?:req|request|params|query|body|input|user)",
+        "innerHTML\\s*\\+?=\\s*(?!\\s*['\"]\\s*$)",
+        "document\\.write\\s*\\(\\s*(?:req|request|params|query|body|input|user|location|window)",
+        "\\$\\s*\\(.*\\)\\.html\\s*\\(\\s*(?:req|request|params|query|body|input|data|user)",
+        "res\\.(?:send|write)\\s*\\(\\s*[`'\"]\\s*<.*\\$\\{(?:req|request|params|query|body|input)",
+        "res\\.(?:send|write)\\s*\\(\\s*['\"]\\s*<.*['\"]\\s*\\+\\s*(?:req|request|params|query|body|input)",
+        "render_template_string\\s*\\(.*(?:request|args|form|data)",
+        "Markup\\s*\\(\\s*f['\"].*(?:request|args|form)",
+        "dangerouslySetInnerHTML\\s*=\\s*\\{\\{\\s*__html\\s*:\\s*(?:req|request|params|props|data|user|input)",
+        "v-html\\s*=\\s*['\"]\\s*(?:user|input|data|content|message|comment|post|query)",
+        "\\{\\{\\{\\s*(?:user|input|data|content|message|body|comment)\\s*\\}\\}\\}",
+        "(?:outerHTML|insertAdjacentHTML)\\s*(?:=|\\()\\s*(?:req|request|params|query|body|input|user|data)"
+      ],
+      "remediation": "Never insert user input directly into HTML. Use textContent instead of innerHTML for text. Use template engines with auto-escaping enabled (Jinja2 with autoescape=True, React JSX which escapes by default, Handlebars {{}} double-curly which escapes). If HTML is necessary, sanitize with DOMPurify (client-side) or sanitize-html (server-side). Set Content-Security-Policy headers. Use HttpOnly and Secure flags on cookies. In React, avoid dangerouslySetInnerHTML with user data. In Vue, avoid v-html with user data."
     }
   ]
 }

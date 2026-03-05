@@ -406,6 +406,62 @@ async function removePolicy(apiKey, policyId) {
   return redis('HDEL', key, policyId);
 }
 
+// --- API Keys (self-service) ---
+
+async function storeApiKey(keyId, keyData) {
+  // keyData: { key, label, createdAt, lastUsedAt, usageCount }
+  // Store with no TTL — keys persist until revoked
+  await redis('SET', `apikey:${keyId}`, JSON.stringify(keyData));
+  // Index: key value → keyId (for lookups by the actual key string)
+  await redis('SET', `apikey-lookup:${keyData.key}`, keyId);
+  // Track all keys in a set
+  await redis('SADD', 'apikeys:all', keyId);
+}
+
+async function getApiKeyById(keyId) {
+  const val = await redis('GET', `apikey:${keyId}`);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
+}
+
+async function getApiKeyByValue(keyValue) {
+  const keyId = await redis('GET', `apikey-lookup:${keyValue}`);
+  if (!keyId) return null;
+  return getApiKeyById(keyId);
+}
+
+async function isValidApiKey(keyValue) {
+  const exists = await redis('EXISTS', `apikey-lookup:${keyValue}`);
+  return exists === 1;
+}
+
+async function trackApiKeyUsage(keyValue) {
+  const keyId = await redis('GET', `apikey-lookup:${keyValue}`);
+  if (!keyId) return;
+  const raw = await redis('GET', `apikey:${keyId}`);
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    data.usageCount = (data.usageCount || 0) + 1;
+    data.lastUsedAt = new Date().toISOString();
+    await redis('SET', `apikey:${keyId}`, JSON.stringify(data));
+  } catch {}
+}
+
+async function revokeApiKey(keyValue) {
+  const keyId = await redis('GET', `apikey-lookup:${keyValue}`);
+  if (!keyId) return false;
+  await redis('DEL', `apikey:${keyId}`);
+  await redis('DEL', `apikey-lookup:${keyValue}`);
+  await redis('SREM', 'apikeys:all', keyId);
+  return true;
+}
+
+async function getApiKeyCount() {
+  const val = await redis('SCARD', 'apikeys:all');
+  return parseInt(val) || 0;
+}
+
 module.exports = {
   redis, incrScanCount, getScanCount,
   incrRisk, getRiskDistribution,
@@ -421,6 +477,7 @@ module.exports = {
   addWebhook, getWebhooks, getWebhook, removeWebhook, getAllWebhookKeys,
   addListItem, getList, getListItem, removeListItem,
   storePolicy, getPolicy, listPolicies, removePolicy,
+  storeApiKey, getApiKeyById, getApiKeyByValue, isValidApiKey, trackApiKeyUsage, revokeApiKey, getApiKeyCount,
 };
 
 // --- Webhook Subscriptions ---

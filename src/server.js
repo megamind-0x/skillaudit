@@ -44,7 +44,7 @@ app.use(async (req, res, next) => {
   if (!route) return next();
 
   // API key holders bypass payment
-  if (API_KEYS.has(req.query?.key)) return next();
+  if (API_KEYS.has(req.query?.key) || await isValidKey(req.query?.key)) return next();
 
   // Check for payment proof: X-Payment-TX (our DIY) or PAYMENT-SIGNATURE (x402 standard)
   const paymentHeader = req.headers['x-payment-tx'] || req.headers['payment-signature'] || req.headers['x-payment'];
@@ -118,6 +118,20 @@ app.use(async (req, res, next) => {
 
 // --- API Keys ---
 const API_KEYS = new Set((process.env.SKILLAUDIT_API_KEYS || 'sk-skillaudit-dev').split(','));
+
+// Check if an API key is valid (env-based OR Redis-stored)
+async function isValidKey(key) {
+  if (!key) return false;
+  if (API_KEYS.has(key)) return true;
+  return db.isValidApiKey(key);
+}
+
+// Track API key usage (only for Redis-stored keys)
+function trackKeyUsage(key) {
+  if (key && !API_KEYS.has(key)) {
+    db.trackApiKeyUsage(key).catch(() => {});
+  }
+}
 
 // --- Rate Limiting ---
 const scanLimiter = rateLimit({
@@ -357,6 +371,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- Track API key usage ---
+app.use((req, res, next) => {
+  const key = req.query.key || req.headers['x-api-key'];
+  if (key) trackKeyUsage(key);
+  next();
+});
+
 // --- Static files (SEO) ---
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d' }));
 
@@ -372,7 +393,7 @@ app.get('/gate', scanLimiter, async (req, res) => {
 
   // Check allowlist/denylist BEFORE scanning (API key required)
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (apiKey && API_KEYS.has(apiKey)) {
+  if (apiKey && await isValidKey(apiKey)) {
     const denied = await checkList(apiKey, 'deny', url);
     if (denied) {
       return res.json({
@@ -443,7 +464,7 @@ app.get('/gate', scanLimiter, async (req, res) => {
     // Policy evaluation (if specified)
     let policyResult = undefined;
     const policyId = req.query.policy;
-    if (policyId && apiKey && API_KEYS.has(apiKey)) {
+    if (policyId && apiKey && await isValidKey(apiKey)) {
       const policy = await db.getPolicy(apiKey, policyId);
       if (policy) {
         policyResult = evaluatePolicy(policy, result, url);
@@ -509,7 +530,7 @@ app.post('/gate/bulk', scanLimiter, async (req, res) => {
 
   // Check allowlist/denylist for bulk gate
   const apiKey = req.query.key || req.headers['x-api-key'];
-  const hasListAccess = apiKey && API_KEYS.has(apiKey);
+  const hasListAccess = apiKey && await isValidKey(apiKey);
 
   const results = await Promise.all(urls.map(async (url) => {
     // Check denylist first
@@ -4122,7 +4143,7 @@ app.get('/feed/rules', async (req, res) => {
 // Add a URL to watchlist
 app.post('/watchlist', scanLimiter, async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.', hint: 'Contact @Megamind_0x for an API key.' });
   }
   const { url, label, webhook } = req.body;
@@ -4182,7 +4203,7 @@ app.post('/watchlist', scanLimiter, async (req, res) => {
 // List watchlist
 app.get('/watchlist', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const items = await db.getWatchlist(apiKey);
@@ -4197,7 +4218,7 @@ app.get('/watchlist', async (req, res) => {
 // Check/re-scan all watchlist URLs (or one by id)
 app.post('/watchlist/check', scanLimiter, async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const { id: targetId } = req.body || {};
@@ -4293,7 +4314,7 @@ app.post('/watchlist/check', scanLimiter, async (req, res) => {
 // Remove from watchlist
 app.delete('/watchlist/:id', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const item = await db.getWatchlistItem(apiKey, req.params.id);
@@ -4305,7 +4326,7 @@ app.delete('/watchlist/:id', async (req, res) => {
 // Get watchlist alerts (all risk changes across watched URLs)
 app.get('/watchlist/alerts', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const items = await db.getWatchlist(apiKey);
@@ -4433,7 +4454,7 @@ function evaluatePolicy(policy, scanResult, url) {
 // CRUD endpoints for policies
 app.post('/policies', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
 
@@ -4483,7 +4504,7 @@ app.post('/policies', async (req, res) => {
 
 app.get('/policies', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const policies = await db.listPolicies(apiKey);
@@ -4492,7 +4513,7 @@ app.get('/policies', async (req, res) => {
 
 app.delete('/policies/:id', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const policy = await db.getPolicy(apiKey, req.params.id);
@@ -4508,7 +4529,7 @@ app.delete('/policies/:id', async (req, res) => {
 
 // Helper: check if a URL/domain/hash matches any list entry
 async function checkList(apiKey, listType, url) {
-  if (!apiKey || !API_KEYS.has(apiKey)) return null;
+  if (!apiKey || !await isValidKey(apiKey)) return null;
   const items = await db.getList(apiKey, listType);
   if (!items || items.length === 0) return null;
   const domain = getDomain(url);
@@ -4523,7 +4544,7 @@ async function checkList(apiKey, listType, url) {
 }
 
 async function checkHashList(apiKey, listType, contentHash) {
-  if (!apiKey || !API_KEYS.has(apiKey) || !contentHash) return null;
+  if (!apiKey || !await isValidKey(apiKey) || !contentHash) return null;
   const items = await db.getList(apiKey, listType);
   if (!items || items.length === 0) return null;
   for (const item of items) {
@@ -4539,7 +4560,7 @@ function registerListRoutes(listType) {
   // POST /{listType}list — add an entry
   app.post(`/${listType}list`, async (req, res) => {
     const apiKey = req.query.key || req.headers['x-api-key'];
-    if (!apiKey || !API_KEYS.has(apiKey)) {
+    if (!apiKey || !await isValidKey(apiKey)) {
       return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
     }
     const { pattern, matchType, reason, label: entryLabel } = req.body;
@@ -4591,7 +4612,7 @@ function registerListRoutes(listType) {
   // GET /{listType}list — list entries
   app.get(`/${listType}list`, async (req, res) => {
     const apiKey = req.query.key || req.headers['x-api-key'];
-    if (!apiKey || !API_KEYS.has(apiKey)) {
+    if (!apiKey || !await isValidKey(apiKey)) {
       return res.status(401).json({ error: 'API key required.' });
     }
     const items = await db.getList(apiKey, listType);
@@ -4605,7 +4626,7 @@ function registerListRoutes(listType) {
   // DELETE /{listType}list/:id — remove entry
   app.delete(`/${listType}list/:id`, async (req, res) => {
     const apiKey = req.query.key || req.headers['x-api-key'];
-    if (!apiKey || !API_KEYS.has(apiKey)) {
+    if (!apiKey || !await isValidKey(apiKey)) {
       return res.status(401).json({ error: 'API key required.' });
     }
     const item = await db.getListItem(apiKey, listType, req.params.id);
@@ -4622,7 +4643,7 @@ registerListRoutes('deny');
 // POST /webhooks — register a webhook to receive scan events matching your filters
 app.post('/webhooks', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
   }
 
@@ -4704,7 +4725,7 @@ app.post('/webhooks', async (req, res) => {
 // GET /webhooks — list your registered webhooks
 app.get('/webhooks', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hooks = await db.getWebhooks(apiKey);
@@ -4719,7 +4740,7 @@ app.get('/webhooks', async (req, res) => {
 // DELETE /webhooks/:id — remove a webhook
 app.delete('/webhooks/:id', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hook = await db.getWebhook(apiKey, req.params.id);
@@ -4731,7 +4752,7 @@ app.delete('/webhooks/:id', async (req, res) => {
 // PUT /webhooks/:id — update a webhook (toggle active, change filters)
 app.put('/webhooks/:id', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hook = await db.getWebhook(apiKey, req.params.id);
@@ -4753,7 +4774,7 @@ app.put('/webhooks/:id', async (req, res) => {
 // POST /webhooks/:id/test — send a test event to verify your webhook endpoint
 app.post('/webhooks/:id/test', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hook = await db.getWebhook(apiKey, req.params.id);
@@ -4827,7 +4848,7 @@ app.post('/webhooks/verify', (req, res) => {
 // POST /webhooks/:id/rotate — generate a new signing secret
 app.post('/webhooks/:id/rotate', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
   const hook = await db.getWebhook(apiKey, req.params.id);
@@ -4949,6 +4970,124 @@ app.get('/certificate/:id', async (req, res) => {
       api: 'Agents can verify programmatically: GET /certificate/verify?token=<token> → {valid: true/false}',
     },
   });
+});
+
+// --- Self-Service API Key Management ---
+// Generate keys by solving the agent challenge (reverse CAPTCHA)
+app.post('/keys', scanLimiter, async (req, res) => {
+  const { registration_token, label } = req.body || {};
+
+  if (!registration_token) {
+    return res.status(403).json({
+      error: 'API key generation requires completing the agent challenge.',
+      flow: {
+        step1: 'POST /registry/challenge → get challenge object',
+        step2: 'POST /registry/verify-challenge → submit solutions, get registration_token',
+        step3: 'POST /keys → use registration_token to generate API key',
+      },
+      hint: 'This ensures only real agents (not bots) can generate keys.',
+    });
+  }
+
+  // Verify registration token
+  const tokenData = await db.redis('GET', `reg-token:${registration_token}`);
+  if (!tokenData) {
+    return res.status(403).json({ error: 'Invalid or expired registration token. Complete the challenge again: POST /registry/challenge' });
+  }
+
+  // Consume the token (one-time use)
+  await db.redis('DEL', `reg-token:${registration_token}`);
+
+  // Rate limit: max 5 keys total in the system per hour (anti-abuse)
+  const recentKeyCount = await db.redis('GET', 'keys:hourly_count') || '0';
+  if (parseInt(recentKeyCount) >= 20) {
+    return res.status(429).json({ error: 'Too many keys generated recently. Try again later.', retryAfter: 3600 });
+  }
+  await db.redis('INCR', 'keys:hourly_count');
+  await db.redis('EXPIRE', 'keys:hourly_count', 3600);
+
+  // Generate the key
+  const keyId = crypto.randomUUID();
+  const keyValue = `sk-skillaudit-${crypto.randomBytes(16).toString('hex')}`;
+  const keyData = {
+    id: keyId,
+    key: keyValue,
+    label: (label || 'default').substring(0, 64),
+    createdAt: new Date().toISOString(),
+    lastUsedAt: null,
+    usageCount: 0,
+  };
+
+  await db.storeApiKey(keyId, keyData);
+
+  res.json({
+    success: true,
+    key: keyValue,
+    id: keyId,
+    label: keyData.label,
+    createdAt: keyData.createdAt,
+    message: '⚠️ Save this key — it will not be shown again.',
+    usage: {
+      header: 'x-api-key: ' + keyValue,
+      queryParam: '?key=' + keyValue,
+    },
+    unlocks: [
+      'Allowlist / Denylist (instant gate decisions)',
+      'Security Policies (custom gate rules)',
+      'Webhook Subscriptions (push notifications)',
+      'URL Watchlist (continuous monitoring)',
+      'Rate limit bypass',
+    ],
+  });
+});
+
+// Get API key info (usage stats, created date)
+app.get('/keys/info', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey) return res.status(400).json({ error: 'key query parameter or x-api-key header required' });
+
+  // Check env-based keys
+  if (API_KEYS.has(apiKey)) {
+    return res.json({ valid: true, type: 'admin', label: 'Environment key', message: 'This is a server-configured admin key.' });
+  }
+
+  const keyData = await db.getApiKeyByValue(apiKey);
+  if (!keyData) {
+    return res.status(404).json({ valid: false, error: 'API key not found or revoked.' });
+  }
+
+  res.json({
+    valid: true,
+    type: 'self-service',
+    id: keyData.id,
+    label: keyData.label,
+    createdAt: keyData.createdAt,
+    lastUsedAt: keyData.lastUsedAt,
+    usageCount: keyData.usageCount || 0,
+    // Don't return the key value itself
+  });
+});
+
+// Revoke an API key
+app.delete('/keys', async (req, res) => {
+  const apiKey = req.query.key || req.headers['x-api-key'];
+  if (!apiKey) return res.status(400).json({ error: 'key query parameter or x-api-key header required' });
+
+  if (API_KEYS.has(apiKey)) {
+    return res.status(403).json({ error: 'Cannot revoke server-configured keys via API.' });
+  }
+
+  const revoked = await db.revokeApiKey(apiKey);
+  if (!revoked) {
+    return res.status(404).json({ error: 'API key not found or already revoked.' });
+  }
+
+  res.json({ success: true, message: 'API key revoked. All associated data (policies, webhooks, lists) will no longer work with this key.' });
+});
+
+// Keys page (HTML)
+app.get('/keys', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'keys.html'));
 });
 
 // --- OpenAPI 3.0 Spec ---
@@ -6964,7 +7103,7 @@ function evaluatePolicy(policy, scanResult, url) {
 // POST /policy — create or update a policy (API key required)
 app.post('/policy', scanLimiter, async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required. Pass ?key=YOUR_KEY or X-API-Key header.' });
   }
 
@@ -7002,7 +7141,7 @@ app.post('/policy', scanLimiter, async (req, res) => {
 // GET /policy — list all policies for this API key
 app.get('/policy', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
 
@@ -7021,7 +7160,7 @@ app.get('/policy', async (req, res) => {
 // GET /policy/:id/evaluate — evaluate a URL against a policy
 app.get('/policy/:id/evaluate', scanLimiter, async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
 
@@ -7059,7 +7198,7 @@ app.get('/policy/:id/evaluate', scanLimiter, async (req, res) => {
 // POST /policy/:id/evaluate — evaluate raw content against a policy
 app.post('/policy/:id/evaluate', scanLimiter, async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
 
@@ -7136,7 +7275,7 @@ app.post('/policy/evaluate-inline', scanLimiter, async (req, res) => {
 // DELETE /policy/:id — delete a policy
 app.delete('/policy/:id', async (req, res) => {
   const apiKey = req.query.key || req.headers['x-api-key'];
-  if (!apiKey || !API_KEYS.has(apiKey)) {
+  if (!apiKey || !await isValidKey(apiKey)) {
     return res.status(401).json({ error: 'API key required.' });
   }
 

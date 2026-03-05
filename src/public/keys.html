@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Keys — SkillAudit</title>
+<meta name="description" content="Generate a free API key to unlock SkillAudit's full feature set: policies, webhooks, allowlists, and more.">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:2rem}
+a{color:#4fc3f7;text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:720px;margin:0 auto}
+h1{font-size:2rem;margin-bottom:.5rem;color:#fff}
+.subtitle{color:#888;margin-bottom:2rem;font-size:1.05rem}
+.card{background:#151515;border:1px solid #222;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem}
+.card h2{font-size:1.2rem;color:#fff;margin-bottom:.75rem}
+.step{display:flex;gap:1rem;align-items:flex-start;margin-bottom:1rem;padding:.75rem;background:#1a1a1a;border-radius:8px;border:1px solid #2a2a2a}
+.step-num{background:#4fc3f7;color:#000;font-weight:700;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.85rem}
+.step-text{font-size:.95rem;line-height:1.5}
+.btn{background:#4fc3f7;color:#000;border:none;padding:.75rem 1.5rem;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;transition:all .2s}
+.btn:hover{background:#81d4fa;transform:translateY(-1px)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-danger{background:#ef5350;color:#fff}
+.btn-danger:hover{background:#f44336}
+.input{background:#1a1a1a;border:1px solid #333;color:#e0e0e0;padding:.6rem 1rem;border-radius:8px;font-size:.95rem;width:100%;font-family:inherit}
+.input:focus{outline:none;border-color:#4fc3f7}
+.key-display{background:#1a2e1a;border:1px solid #2e7d32;border-radius:8px;padding:1rem;margin:1rem 0;font-family:'Fira Code',monospace;font-size:.95rem;word-break:break-all;color:#66bb6a;position:relative}
+.key-display .copy-btn{position:absolute;top:.5rem;right:.5rem;background:#2e7d32;color:#fff;border:none;padding:.3rem .6rem;border-radius:4px;cursor:pointer;font-size:.8rem}
+.key-display .copy-btn:hover{background:#388e3c}
+.status{padding:.75rem 1rem;border-radius:8px;margin:1rem 0;font-size:.95rem}
+.status-info{background:#1a1a2e;border:1px solid #303f9f;color:#7986cb}
+.status-success{background:#1a2e1a;border:1px solid #2e7d32;color:#66bb6a}
+.status-error{background:#2e1a1a;border:1px solid #c62828;color:#ef5350}
+.status-loading{background:#1a1a1a;border:1px solid #444;color:#aaa}
+.unlocks{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:.75rem}
+.unlock-item{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;padding:.5rem .75rem;font-size:.85rem;color:#bbb}
+.unlock-item::before{content:'🔓 ';font-size:.8rem}
+.info-section{margin-top:1rem;padding-top:1rem;border-top:1px solid #222}
+.info-row{display:flex;justify-content:space-between;padding:.4rem 0;font-size:.9rem}
+.info-label{color:#888}
+.info-value{color:#fff;font-family:'Fira Code',monospace;font-size:.85rem}
+.footer{text-align:center;margin-top:3rem;padding-top:1rem;border-top:1px solid #222;color:#555;font-size:.85rem}
+#check-section{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🔑 API Keys</h1>
+  <p class="subtitle">Generate a free API key to unlock SkillAudit's full feature set.</p>
+
+  <!-- Generate Key -->
+  <div class="card">
+    <h2>Generate a New Key</h2>
+    <p style="color:#aaa;font-size:.9rem;margin-bottom:1rem">Solve a quick agent challenge (3 steps, ~1 second) to prove you're a real agent, then get your key instantly.</p>
+
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Click <strong>Generate Key</strong> — we'll solve the challenge automatically</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text"><strong>Copy your key</strong> — it's shown only once</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Use it: <code style="background:#222;padding:2px 6px;border-radius:4px">?key=sk-skillaudit-...</code> or <code style="background:#222;padding:2px 6px;border-radius:4px">x-api-key: sk-skillaudit-...</code></div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;align-items:center;margin-top:1rem">
+      <input class="input" id="key-label" placeholder="Label (optional, e.g. 'my-agent')" style="max-width:300px">
+      <button class="btn" id="generate-btn" onclick="generateKey()">⚡ Generate Key</button>
+    </div>
+
+    <div id="generate-status"></div>
+    <div id="key-result" style="display:none">
+      <div class="key-display">
+        <span id="key-value"></span>
+        <button class="copy-btn" onclick="copyKey()">Copy</button>
+      </div>
+      <div class="status status-info">⚠️ Save this key now — it will not be shown again.</div>
+    </div>
+
+    <p style="color:#666;font-size:.85rem;margin-top:1rem">Your key unlocks:</p>
+    <div class="unlocks">
+      <div class="unlock-item">Allowlist / Denylist</div>
+      <div class="unlock-item">Security Policies</div>
+      <div class="unlock-item">Webhook Subscriptions</div>
+      <div class="unlock-item">URL Watchlist</div>
+      <div class="unlock-item">Rate Limit Bypass</div>
+      <div class="unlock-item">Monitor Dashboard</div>
+    </div>
+  </div>
+
+  <!-- Check Existing Key -->
+  <div class="card">
+    <h2>Check Existing Key</h2>
+    <p style="color:#aaa;font-size:.9rem;margin-bottom:1rem">Verify your key is valid and see usage stats.</p>
+    <div style="display:flex;gap:.75rem">
+      <input class="input" id="check-key" placeholder="sk-skillaudit-...">
+      <button class="btn" onclick="checkKey()" style="white-space:nowrap">Check</button>
+    </div>
+    <div id="check-status"></div>
+    <div id="check-section">
+      <div class="info-section">
+        <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="ck-status">—</span></div>
+        <div class="info-row"><span class="info-label">Label</span><span class="info-value" id="ck-label">—</span></div>
+        <div class="info-row"><span class="info-label">Created</span><span class="info-value" id="ck-created">—</span></div>
+        <div class="info-row"><span class="info-label">Last Used</span><span class="info-value" id="ck-lastused">—</span></div>
+        <div class="info-row"><span class="info-label">Total Requests</span><span class="info-value" id="ck-usage">—</span></div>
+      </div>
+      <div style="margin-top:1rem;text-align:right">
+        <button class="btn btn-danger" onclick="revokeKey()">🗑️ Revoke Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- For Agents (curl) -->
+  <div class="card">
+    <h2>For Agents (Programmatic)</h2>
+    <pre style="background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:1rem;overflow-x:auto;font-size:.85rem;color:#aaa;line-height:1.6"><span style="color:#666"># Step 1: Get challenge</span>
+<span style="color:#4fc3f7">CHALLENGE</span>=$(curl -s -X POST https://skillaudit.vercel.app/registry/challenge)
+
+<span style="color:#666"># Step 2: Solve it (your agent solves the 3 steps)</span>
+<span style="color:#4fc3f7">TOKEN</span>=$(curl -s -X POST https://skillaudit.vercel.app/registry/verify-challenge \
+  -H 'Content-Type: application/json' \
+  -d '{"challenge_id":"...","solutions":{...}}' | jq -r .registration_token)
+
+<span style="color:#666"># Step 3: Generate key</span>
+curl -s -X POST https://skillaudit.vercel.app/keys \
+  -H 'Content-Type: application/json' \
+  -d "{\"registration_token\":\"$TOKEN\",\"label\":\"my-agent\"}"</pre>
+  </div>
+
+  <div class="footer">
+    <a href="/">← Back to SkillAudit</a> · <a href="/docs">API Docs</a> · <a href="/integrations">Integrations</a>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+async function solveChallenge() {
+  // Get challenge
+  const challengeRes = await fetch(API + '/registry/challenge', { method: 'POST' });
+  const challenge = await challengeRes.json();
+
+  // Solve step 1: SHA-256 hash
+  const encoder = new TextEncoder();
+  const data = encoder.encode(challenge.steps[0].nonce);
+  const hashBuf = await crypto.subtle.digest('SHA-256', data);
+  const hashArr = Array.from(new Uint8Array(hashBuf));
+  const step1 = hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Solve step 2: Sort names
+  const step2 = [...challenge.steps[1].names].sort();
+
+  // Solve step 3: Create agent.json
+  const step3 = {
+    name: challenge.steps[2].required_name,
+    description: 'A SkillAudit verified agent',
+    url: 'https://example.com',
+    capabilities: { streaming: false, pushNotifications: false },
+  };
+
+  // Submit solutions
+  const verifyRes = await fetch(API + '/registry/verify-challenge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challenge.challenge_id, solutions: { step_1: step1, step_2: step2, step_3: step3 } }),
+  });
+  const verifyData = await verifyRes.json();
+  if (!verifyData.success) throw new Error(verifyData.error || 'Challenge failed');
+  return verifyData.registration_token;
+}
+
+async function generateKey() {
+  const btn = document.getElementById('generate-btn');
+  const status = document.getElementById('generate-status');
+  const result = document.getElementById('key-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Solving challenge...';
+  status.innerHTML = '<div class="status status-loading">Solving agent challenge...</div>';
+  result.style.display = 'none';
+
+  try {
+    const token = await solveChallenge();
+    status.innerHTML = '<div class="status status-loading">Generating key...</div>';
+
+    const label = document.getElementById('key-label').value.trim() || 'default';
+    const res = await fetch(API + '/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ registration_token: token, label }),
+    });
+    const data = await res.json();
+
+    if (!data.success) throw new Error(data.error || 'Key generation failed');
+
+    document.getElementById('key-value').textContent = data.key;
+    result.style.display = 'block';
+    status.innerHTML = '<div class="status status-success">✅ Key generated successfully!</div>';
+  } catch (err) {
+    status.innerHTML = `<div class="status status-error">❌ ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Generate Key';
+  }
+}
+
+function copyKey() {
+  const key = document.getElementById('key-value').textContent;
+  navigator.clipboard.writeText(key).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+async function checkKey() {
+  const key = document.getElementById('check-key').value.trim();
+  if (!key) return;
+  const status = document.getElementById('check-status');
+  const section = document.getElementById('check-section');
+  status.innerHTML = '<div class="status status-loading">Checking...</div>';
+  section.style.display = 'none';
+
+  try {
+    const res = await fetch(API + '/keys/info?key=' + encodeURIComponent(key));
+    const data = await res.json();
+    if (!data.valid) throw new Error(data.error || 'Invalid key');
+
+    document.getElementById('ck-status').textContent = '✅ Valid';
+    document.getElementById('ck-status').style.color = '#66bb6a';
+    document.getElementById('ck-label').textContent = data.label || '—';
+    document.getElementById('ck-created').textContent = data.createdAt ? new Date(data.createdAt).toLocaleDateString() : '—';
+    document.getElementById('ck-lastused').textContent = data.lastUsedAt ? new Date(data.lastUsedAt).toLocaleString() : 'Never';
+    document.getElementById('ck-usage').textContent = data.usageCount || 0;
+    section.style.display = 'block';
+    status.innerHTML = '';
+  } catch (err) {
+    status.innerHTML = `<div class="status status-error">❌ ${err.message}</div>`;
+  }
+}
+
+async function revokeKey() {
+  const key = document.getElementById('check-key').value.trim();
+  if (!key || !confirm('Are you sure? This cannot be undone.')) return;
+  try {
+    const res = await fetch(API + '/keys?key=' + encodeURIComponent(key), { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('check-status').innerHTML = '<div class="status status-success">✅ Key revoked.</div>';
+      document.getElementById('check-section').style.display = 'none';
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (err) {
+    document.getElementById('check-status').innerHTML = `<div class="status status-error">❌ ${err.message}</div>`;
+  }
+}
+</script>
+</body>
+</html>

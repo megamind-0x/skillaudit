@@ -1696,6 +1696,260 @@ app.post('/scan/deps', scanLimiter, async (req, res) => {
   });
 });
 
+// --- Python Dependency Scanner ---
+// POST /scan/deps/python — scan Python dependencies from requirements.txt
+app.post('/scan/deps/python', scanLimiter, async (req, res) => {
+  const { requirements, pyproject, projectName: reqProjectName } = req.body;
+
+  let deps = []; // Array of {name, specifier}
+  let projectName = reqProjectName || 'unknown';
+
+  // Parse requirements.txt format
+  if (requirements && typeof requirements === 'string') {
+    deps = requirements.split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#') && !line.startsWith('-'))
+      .map(line => {
+        // Remove inline comments
+        const cleaned = line.split('#')[0].trim();
+        // Remove environment markers (everything after ;)
+        const noMarker = cleaned.split(';')[0].trim();
+        // Remove extras like [security]
+        const noExtras = noMarker.replace(/\[.*?\]/g, '');
+        // Split name from version spec
+        const match = noExtras.match(/^([a-zA-Z0-9_.-]+)\s*(.*)?$/);
+        if (!match) return null;
+        return { name: match[1].toLowerCase(), specifier: (match[2] || '').trim() || '*' };
+      })
+      .filter(Boolean);
+  } else if (pyproject && typeof pyproject === 'object') {
+    // Parse pyproject.toml-style dependencies
+    projectName = pyproject.name || pyproject.project?.name || projectName;
+    const depList = pyproject.dependencies || pyproject.project?.dependencies || [];
+    if (Array.isArray(depList)) {
+      deps = depList.map(d => {
+        const match = d.match(/^([a-zA-Z0-9_.-]+)\s*(.*)?$/);
+        if (!match) return null;
+        return { name: match[1].toLowerCase(), specifier: (match[2] || '').trim() || '*' };
+      }).filter(Boolean);
+    }
+  } else {
+    return res.status(400).json({
+      error: 'Either requirements (string) or pyproject (object) is required',
+      example: {
+        requirements: 'langchain>=0.1.0\nopenai>=1.0\nfastapi\nuvicorn',
+      },
+      hint: 'POST your requirements.txt content to scan all Python dependencies for supply chain risks',
+    });
+  }
+
+  if (deps.length === 0) {
+    return res.json({
+      project: projectName,
+      dependenciesScanned: 0,
+      message: 'No dependencies found to scan.',
+      overallRisk: 'clean',
+    });
+  }
+
+  // Cap at 50 dependencies
+  const maxDeps = 50;
+  const truncated = deps.length > maxDeps;
+  const toScan = deps.slice(0, maxDeps);
+
+  // Known malicious / typosquatted package names in Python
+  const knownMaliciousPatterns = [
+    /^python3?-/, // python-requests vs requests
+    /-python$/, // requests-python vs requests
+  ];
+  const popularPyPkgs = [
+    'requests', 'flask', 'django', 'numpy', 'pandas', 'fastapi', 'httpx',
+    'boto3', 'transformers', 'langchain', 'openai', 'anthropic', 'torch',
+    'tensorflow', 'scikit-learn', 'pillow', 'cryptography', 'pydantic',
+    'uvicorn', 'celery', 'redis', 'sqlalchemy', 'aiohttp', 'beautifulsoup4',
+    'pytest', 'black', 'mypy', 'ruff', 'setuptools', 'pip', 'wheel',
+  ];
+
+  const results = await Promise.all(toScan.map(async (dep) => {
+    try {
+      const pypiMeta = await fetchJsonLarge(`https://pypi.org/pypi/${encodeURIComponent(dep.name)}/json`);
+
+      if (pypiMeta.message === 'Not Found' || !pypiMeta.info) {
+        return { package: dep.name, specifier: dep.specifier, status: 'not_found', riskLevel: 'unknown' };
+      }
+
+      const info = pypiMeta.info;
+      const warnings = [];
+
+      // Check for typosquatting
+      for (const popular of popularPyPkgs) {
+        if (dep.name !== popular && dep.name !== popular.replace(/-/g, '_')) {
+          const normalized = dep.name.replace(/[-_]/g, '');
+          const normalizedPopular = popular.replace(/[-_]/g, '');
+          if (normalized.includes(normalizedPopular) && normalized.length <= normalizedPopular.length + 3) {
+            warnings.push({
+              type: 'potential_typosquat',
+              severity: 'high',
+              description: `Package "${dep.name}" is suspiciously similar to popular package "${popular}"`,
+            });
+          }
+        }
+      }
+
+      // Check for malicious name patterns
+      for (const pat of knownMaliciousPatterns) {
+        if (pat.test(dep.name)) {
+          const baseName = dep.name.replace(/^python3?-/, '').replace(/-python$/, '');
+          if (popularPyPkgs.includes(baseName)) {
+            warnings.push({
+              type: 'suspicious_name_pattern',
+              severity: 'high',
+              description: `Package "${dep.name}" uses a common typosquat pattern (python-${baseName} vs ${baseName})`,
+            });
+          }
+        }
+      }
+
+      // Check classifiers for early development
+      const classifiers = info.classifiers || [];
+      if (classifiers.some(c => /Development Status :: [12]/.test(c))) {
+        warnings.push({ type: 'early_development', severity: 'low', description: 'Package is in early development (Planning/Pre-Alpha)' });
+      }
+
+      // Check if deprecated / yanked
+      if (info.yanked) {
+        warnings.push({ type: 'yanked', severity: 'high', description: `Version yanked: ${info.yanked_reason || 'no reason given'}` });
+      }
+
+      // Check for no source repo (harder to audit)
+      let hasRepo = false;
+      const projectUrls = { ...(info.project_urls || {}), homepage: info.home_page };
+      for (const [, url] of Object.entries(projectUrls)) {
+        if (url && /github\.com|gitlab\.com|bitbucket\.org/i.test(url)) {
+          hasRepo = true;
+          break;
+        }
+      }
+      if (!hasRepo) {
+        warnings.push({ type: 'no_source_repo', severity: 'medium', description: 'No linked source repository (GitHub/GitLab) — harder to audit' });
+      }
+
+      // Scan description for suspicious patterns
+      let scanResult = { riskLevel: 'clean', riskScore: 0, summary: { total: 0, critical: 0, high: 0 } };
+      if (info.description && info.description.length > 50) {
+        scanResult = scanContent(info.description, `pypi:${dep.name}/description`);
+      }
+
+      // Find GitHub repo for setup.py check
+      let githubRepo = null;
+      for (const [, url] of Object.entries(projectUrls)) {
+        if (!url) continue;
+        const ghMatch = url.match(/github\.com\/([^\/]+\/[^\/\s#?]+)/i);
+        if (ghMatch) { githubRepo = ghMatch[1].replace(/\.git$/, ''); break; }
+      }
+
+      // Try to fetch and scan setup.py for dangerous patterns
+      if (githubRepo) {
+        for (const branch of ['main', 'master']) {
+          try {
+            const setupContent = await fetchUrl(`https://raw.githubusercontent.com/${githubRepo}/${branch}/setup.py`);
+            if (setupContent && setupContent.length > 10) {
+              const dangerousSetupPatterns = [
+                { pattern: /os\.system\s*\(/i, desc: 'os.system() call in setup.py — executes shell commands during install' },
+                { pattern: /subprocess\.\w+\s*\(/i, desc: 'subprocess call in setup.py — runs external processes during install' },
+                { pattern: /exec\s*\(/i, desc: 'exec() in setup.py — arbitrary code execution during install' },
+                { pattern: /eval\s*\(/i, desc: 'eval() in setup.py — arbitrary code execution during install' },
+                { pattern: /urllib\.request|requests\.get|http\.client/i, desc: 'Network request in setup.py — downloads code during install' },
+                { pattern: /base64\.b64decode/i, desc: 'Base64 decode in setup.py — possible obfuscated payload' },
+              ];
+              for (const dp of dangerousSetupPatterns) {
+                if (dp.pattern.test(setupContent)) {
+                  warnings.push({ type: 'dangerous_setup_py', severity: 'high', description: dp.desc });
+                }
+              }
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      // Determine final risk
+      let riskLevel = scanResult.riskLevel;
+      const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+      if (warnings.some(w => w.severity === 'high')) {
+        const idx = riskOrder.indexOf(riskLevel);
+        if (idx < 3) riskLevel = 'high';
+      }
+
+      const depDeps = (info.requires_dist || []).map(d => d.split(/[;><=!\s]/)[0].trim()).filter(Boolean);
+
+      return {
+        package: dep.name,
+        specifier: dep.specifier,
+        version: info.version,
+        status: 'scanned',
+        riskLevel,
+        riskScore: scanResult.riskScore,
+        findings: scanResult.summary.total,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        license: info.license || null,
+        author: info.author || info.author_email || null,
+        pythonRequires: info.requires_python || null,
+        dependencyCount: depDeps.length,
+      };
+    } catch (err) {
+      return { package: dep.name, specifier: dep.specifier, status: 'error', error: err.message, riskLevel: 'unknown' };
+    }
+  }));
+
+  const scanned = results.filter(r => r.status === 'scanned');
+  const failed = results.filter(r => r.status !== 'scanned');
+  const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+
+  const worstRisk = scanned.reduce((worst, r) => {
+    return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+  }, 'clean');
+
+  const riskBreakdown = { clean: 0, low: 0, moderate: 0, high: 0, critical: 0, unknown: 0 };
+  results.forEach(r => { riskBreakdown[r.riskLevel] = (riskBreakdown[r.riskLevel] || 0) + 1; });
+
+  const flagged = scanned.filter(r => ['moderate', 'high', 'critical'].includes(r.riskLevel));
+  const withWarnings = scanned.filter(r => r.warnings && r.warnings.length > 0);
+  const totalFindings = scanned.reduce((s, r) => s + (r.findings || 0), 0);
+
+  res.json({
+    project: projectName,
+    ecosystem: 'python',
+    dependenciesTotal: deps.length,
+    dependenciesScanned: scanned.length,
+    dependenciesFailed: failed.length,
+    truncated,
+    truncatedAt: truncated ? maxDeps : undefined,
+    overallRisk: worstRisk,
+    riskBreakdown,
+    totalFindings,
+    flaggedCount: flagged.length,
+    warningCount: withWarnings.length,
+    verdict: flagged.length === 0 && withWarnings.length === 0
+      ? `✅ Python supply chain looks clean — ${scanned.length} dependencies scanned, no issues found.`
+      : flagged.some(r => r.riskLevel === 'critical')
+        ? `🔴 CRITICAL supply chain risk — ${flagged.length} flagged package(s). Audit required before deployment.`
+        : withWarnings.length > 0 && flagged.length === 0
+          ? `🔶 ${withWarnings.length} package(s) have warnings (typosquatting, no repo, dangerous setup.py). Review carefully.`
+          : `⚠️ ${flagged.length} package(s) flagged with moderate+ risk. Review recommended.`,
+    flagged: flagged.map(r => ({
+      package: r.package,
+      specifier: r.specifier,
+      version: r.version,
+      riskLevel: r.riskLevel,
+      riskScore: r.riskScore,
+      findings: r.findings,
+      warnings: r.warnings,
+    })),
+    all: results,
+  });
+});
+
 // --- MCP Tool Manifest Scanner ---
 // POST /scan/manifest — scan an MCP server's tool manifest for schema poisoning
 app.post('/scan/manifest', scanLimiter, (req, res) => {
@@ -3959,6 +4213,23 @@ function fetchJson(url) {
       if (res.statusCode !== 200) { clearTimeout(timeout); return reject(new Error(`HTTP ${res.statusCode}`)); }
       let data = '';
       res.on('data', chunk => { data += chunk; if (data.length > 1024 * 256) { res.destroy(); clearTimeout(timeout); reject(new Error('Response too large')); } });
+      res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON')); } });
+    }).on('error', (e) => { clearTimeout(timeout); reject(e); });
+  });
+}
+
+// Larger limit for PyPI/large registry responses (up to 5MB)
+function fetchJsonLarge(url) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Request timeout (20s)')), 20000);
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, {
+      headers: { 'User-Agent': 'SkillAudit/1.1', 'Accept': 'application/json' },
+      timeout: 20000,
+    }, (res) => {
+      if (res.statusCode !== 200) { clearTimeout(timeout); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      let data = '';
+      res.on('data', chunk => { data += chunk; if (data.length > 1024 * 1024 * 5) { res.destroy(); clearTimeout(timeout); reject(new Error('Response too large')); } });
       res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON')); } });
     }).on('error', (e) => { clearTimeout(timeout); reject(e); });
   });

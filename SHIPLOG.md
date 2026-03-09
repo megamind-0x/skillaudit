@@ -1,5 +1,18 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-03-10 (1:00 AM) — Python Dependency Tree Scanner (POST /scan/deps/python)
+**What:** New endpoint `POST /scan/deps/python` — the Python equivalent of the existing npm `/scan/deps`. Paste your `requirements.txt` or `pyproject.toml` dependencies, get a full supply chain risk report for all Python packages at once. Scans up to 50 packages in parallel via PyPI.
+**Features:**
+- Parses `requirements.txt` format: version specifiers (`>=`, `==`, `~=`), inline comments, environment markers (`;`), extras (`[all]`), and `-r` include lines (filtered)
+- Accepts `pyproject.toml`-style dependency arrays via `pyproject.dependencies`
+- **Typosquatting detection** against 30+ popular Python AI packages (langchain, openai, anthropic, transformers, torch, etc.) — catches `python-requests` vs `requests` name pattern attacks
+- **Dangerous setup.py scanning** — fetches setup.py from linked GitHub repos and flags `os.system()`, `subprocess`, `eval()`, `base64.b64decode`, network requests during install
+- Checks for yanked/deprecated versions, missing source repositories, early development status
+- Per-package risk scoring with warnings, aggregate risk verdict, and full breakdown
+- Added `fetchJsonLarge` helper (5MB limit) to handle large PyPI API responses for popular packages like langchain, openai, fastapi
+**Why:** Python is THE language for AI agents. LangChain, CrewAI, AutoGen, OpenAI SDK — all Python. The npm dependency scanner (`POST /scan/deps`) existed since Feb 18, but Python had no equivalent. A Python developer couldn't dump their `requirements.txt` and get a supply chain report. Now they can: one POST with their requirements, instant risk assessment across all dependencies. This is the `pip audit` equivalent for AI agent projects, and it catches things pip-audit doesn't — typosquatting, dangerous setup.py patterns, and missing source repos. Combined with the npm scanner, SkillAudit now covers dependency trees for both major AI ecosystems.
+**Tested with:** `flask + redis + celery` (3/3 scanned, risk assessed), `langchain + openai + pydantic` via pyproject format (3/3 scanned, large PyPI responses handled), error cases (empty input, comments-only, nonexistent packages). All 107 existing tests pass.
+
 ## 2026-03-02 (2:33 AM) — CLI v1.1.0: Package Scanner Subcommands + npm Publish
 **What:** Five new CLI subcommands that scan packages from any terminal: `skillaudit npm <package>`, `skillaudit pypi <package>`, `skillaudit cargo <crate>`, `skillaudit go <module>`, `skillaudit github <owner/repo>`. Each hits the hosted API and displays rich formatted output with risk badges, file breakdowns, warnings, and verdicts. All support `--json`, `--markdown`, `--no-color`, and `--fail-on` for CI integration. Published as `skillaudit@1.1.0` to npm. Version bumped across all components.
 **Why:** The CLI was stuck at v1.0.0 with only `scan`, `gate`, and `manifest` commands. Meanwhile the API had npm, PyPI, Cargo, Go, and GitHub scanning that was only accessible via curl or the web UI. Now `npx skillaudit npm express` works from any terminal — no browser needed, no curl gymnastics. This is how you become infrastructure: agents and CI pipelines can scan any package in any ecosystem with a one-liner. The npm publish means every `npx skillaudit` call worldwide now gets the latest 43 rules, 401 patterns, and all 5 ecosystem scanners.

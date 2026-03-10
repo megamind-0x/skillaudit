@@ -729,6 +729,7 @@ app.get('/', (req, res) => {
         'GET /scan/cargo?crate=name': 'Scan a Rust crate from crates.io — fetches README, Cargo.toml, source files, checks build scripts and unsafe code',
         'GET /scan/go?module=path': 'Scan a Go module — fetches source from GitHub, checks CGo, unsafe, exec, syscall, plugin loading, replace directives',
         'POST /scan/mcp': 'Scan MCP server tool definitions for schema poisoning, prompt injection, suspicious parameters, and cross-tool threat chains',
+        'GET /scan/vulns?package=name&ecosystem=npm': 'Known vulnerability lookup via OSV.dev — returns CVEs, GHSA advisories, severity, affected versions for any package in npm/PyPI/crates.io/Go/Maven/NuGet/RubyGems',
         'GET /scan/github?repo=owner/name': 'Scan a GitHub repository — fetches security-relevant files, Dockerfile analysis, CI/CD checks, multi-ecosystem detection',
         'GET /reputation/:domain': 'Domain reputation lookup (aggregated scan history)',
         'POST /reputation/bulk': 'Bulk domain reputation check (up to 50 domains)',
@@ -1481,6 +1482,22 @@ app.get('/scan/npm', scanLimiter, async (req, res) => {
     const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
     const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
 
+    // Query OSV for known vulnerabilities (non-blocking — graceful timeout)
+    const osvResult = await queryOSV(pkg, 'npm', latest);
+    const knownVulns = formatOSVVulns(osvResult);
+
+    // Bump risk if known critical/high vulns exist
+    if (knownVulns.count > 0) {
+      if (knownVulns.worstSeverity === 'critical' && riskOrder.indexOf(overallRisk) < 4) {
+        overallRisk = 'critical';
+      } else if (knownVulns.worstSeverity === 'high' && riskOrder.indexOf(overallRisk) < 3) {
+        overallRisk = 'high';
+      }
+    }
+
+    const hasVulns = knownVulns.count > 0;
+    const vulnSuffix = hasVulns ? ` Also has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}).` : '';
+
     res.json({
       package: pkg,
       version: latest,
@@ -1498,16 +1515,19 @@ app.get('/scan/npm', scanLimiter, async (req, res) => {
       totalFindings,
       totalCritical,
       totalHigh,
+      knownVulnerabilities: knownVulns,
       packageWarnings,
-      verdict: totalFindings === 0 && packageWarnings.length === 0
-        ? `✅ Package ${pkg}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
-        : totalCritical > 0
-          ? `🔴 CRITICAL issues in ${pkg}@${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.`
-          : packageWarnings.some(w => w.severity === 'high')
-            ? `🔴 Suspicious install scripts in ${pkg}@${latest} — scripts run automatically on \`npm install\`. Review carefully.`
-            : totalHigh > 0
-              ? `🔶 High risk findings in ${pkg}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
-              : `⚠️ ${totalFindings} finding(s) in ${pkg}@${latest}. Minor concerns detected.`,
+      verdict: (totalFindings === 0 && packageWarnings.length === 0 && !hasVulns
+        ? `✅ Package ${pkg}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues, no known CVEs.`
+        : hasVulns && totalFindings === 0
+          ? `🔴 ${pkg}@${latest} has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}). Update to a patched version.`
+          : totalCritical > 0
+            ? `🔴 CRITICAL issues in ${pkg}@${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.${vulnSuffix}`
+            : packageWarnings.some(w => w.severity === 'high')
+              ? `🔴 Suspicious install scripts in ${pkg}@${latest} — scripts run automatically on \`npm install\`. Review carefully.${vulnSuffix}`
+              : totalHigh > 0
+                ? `🔶 High risk findings in ${pkg}@${latest} — ${totalHigh} high severity issue(s). Review recommended.${vulnSuffix}`
+                : `⚠️ ${totalFindings} finding(s) in ${pkg}@${latest}. Minor concerns detected.${vulnSuffix}`),
       files: fileResults,
       badgeUrl: `https://skillaudit.vercel.app/badge/npmjs.com.svg`,
     });
@@ -2727,6 +2747,22 @@ app.get('/scan/pypi', scanLimiter, async (req, res) => {
     // Extract dependencies from requires_dist
     const deps = (info.requires_dist || []).map(d => d.split(/[;><=!\s]/)[0].trim()).filter(Boolean);
 
+    // Query OSV for known vulnerabilities
+    const osvResult = await queryOSV(pkg, 'PyPI', latest);
+    const knownVulns = formatOSVVulns(osvResult);
+
+    // Bump risk if known critical/high vulns exist
+    if (knownVulns.count > 0) {
+      if (knownVulns.worstSeverity === 'critical' && riskOrder.indexOf(overallRisk) < 4) {
+        overallRisk = 'critical';
+      } else if (knownVulns.worstSeverity === 'high' && riskOrder.indexOf(overallRisk) < 3) {
+        overallRisk = 'high';
+      }
+    }
+
+    const hasVulns = knownVulns.count > 0;
+    const vulnSuffix = hasVulns ? ` Also has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}).` : '';
+
     res.json({
       package: pkg,
       version: latest,
@@ -2745,16 +2781,19 @@ app.get('/scan/pypi', scanLimiter, async (req, res) => {
       totalFindings,
       totalCritical,
       totalHigh,
+      knownVulnerabilities: knownVulns,
       packageWarnings,
-      verdict: totalFindings === 0 && packageWarnings.length === 0
-        ? `✅ Package ${pkg}==${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
-        : totalCritical > 0
-          ? `🔴 CRITICAL issues in ${pkg}==${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.`
-          : packageWarnings.some(w => w.severity === 'high')
-            ? `🔴 Suspicious setup.py in ${pkg}==${latest} — runs code during \`pip install\`. Review carefully.`
-            : totalHigh > 0
-              ? `🔶 High risk findings in ${pkg}==${latest} — ${totalHigh} high severity issue(s). Review recommended.`
-              : `⚠️ ${totalFindings} finding(s) in ${pkg}==${latest}. Minor concerns detected.`,
+      verdict: (totalFindings === 0 && packageWarnings.length === 0 && !hasVulns
+        ? `✅ Package ${pkg}==${latest} appears clean — ${fileResults.length} file(s) scanned, no issues, no known CVEs.`
+        : hasVulns && totalFindings === 0
+          ? `🔴 ${pkg}==${latest} has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}). Update to a patched version.`
+          : totalCritical > 0
+            ? `🔴 CRITICAL issues in ${pkg}==${latest} — ${totalCritical} critical finding(s). Do NOT install without manual audit.${vulnSuffix}`
+            : packageWarnings.some(w => w.severity === 'high')
+              ? `🔴 Suspicious setup.py in ${pkg}==${latest} — runs code during \`pip install\`. Review carefully.${vulnSuffix}`
+              : totalHigh > 0
+                ? `🔶 High risk findings in ${pkg}==${latest} — ${totalHigh} high severity issue(s). Review recommended.${vulnSuffix}`
+                : `⚠️ ${totalFindings} finding(s) in ${pkg}==${latest}. Minor concerns detected.${vulnSuffix}`),
       files: fileResults,
     });
   } catch (err) {
@@ -2936,6 +2975,18 @@ app.get('/scan/cargo', scanLimiter, async (req, res) => {
     const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
     const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
 
+    // Query OSV for known vulnerabilities
+    const osvResult = await queryOSV(crate, 'crates.io', latest);
+    const knownVulns = formatOSVVulns(osvResult);
+
+    if (knownVulns.count > 0) {
+      if (knownVulns.worstSeverity === 'critical' && riskOrder.indexOf(overallRisk) < 4) overallRisk = 'critical';
+      else if (knownVulns.worstSeverity === 'high' && riskOrder.indexOf(overallRisk) < 3) overallRisk = 'high';
+    }
+
+    const hasVulns = knownVulns.count > 0;
+    const vulnSuffix = hasVulns ? ` Also has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}).` : '';
+
     res.json({
       crate,
       version: latest,
@@ -2953,16 +3004,19 @@ app.get('/scan/cargo', scanLimiter, async (req, res) => {
       totalFindings,
       totalCritical,
       totalHigh,
+      knownVulnerabilities: knownVulns,
       cargoWarnings,
-      verdict: totalFindings === 0 && cargoWarnings.length === 0
-        ? `✅ Crate ${crate}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
-        : totalCritical > 0
-          ? `🔴 CRITICAL issues in ${crate}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.`
-          : cargoWarnings.some(w => w.severity === 'high')
-            ? `🔶 ${crate}@${latest} has suspicious build scripts or excessive unsafe code. Review carefully.`
-            : totalHigh > 0
-              ? `🔶 High risk findings in ${crate}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
-              : `⚠️ ${totalFindings} finding(s) in ${crate}@${latest}. Minor concerns detected.`,
+      verdict: (totalFindings === 0 && cargoWarnings.length === 0 && !hasVulns
+        ? `✅ Crate ${crate}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues, no known CVEs.`
+        : hasVulns && totalFindings === 0 && cargoWarnings.length === 0
+          ? `🔴 ${crate}@${latest} has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}). Update to a patched version.`
+          : totalCritical > 0
+            ? `🔴 CRITICAL issues in ${crate}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.${vulnSuffix}`
+            : cargoWarnings.some(w => w.severity === 'high')
+              ? `🔶 ${crate}@${latest} has suspicious build scripts or excessive unsafe code. Review carefully.${vulnSuffix}`
+              : totalHigh > 0
+                ? `🔶 High risk findings in ${crate}@${latest} — ${totalHigh} high severity issue(s). Review recommended.${vulnSuffix}`
+                : `⚠️ ${totalFindings} finding(s) in ${crate}@${latest}. Minor concerns detected.${vulnSuffix}`),
       files: fileResults,
     });
   } catch (err) {
@@ -3250,6 +3304,18 @@ app.get('/scan/go', scanLimiter, async (req, res) => {
       }
     }
 
+    // Query OSV for known vulnerabilities
+    const osvResult = await queryOSV(mod, 'Go', latest);
+    const knownVulns = formatOSVVulns(osvResult);
+
+    if (knownVulns.count > 0) {
+      if (knownVulns.worstSeverity === 'critical' && riskOrder.indexOf(overallRisk) < 4) overallRisk = 'critical';
+      else if (knownVulns.worstSeverity === 'high' && riskOrder.indexOf(overallRisk) < 3) overallRisk = 'high';
+    }
+
+    const hasVulns = knownVulns.count > 0;
+    const vulnSuffix = hasVulns ? ` Also has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}).` : '';
+
     res.json({
       module: mod,
       version: latest,
@@ -3263,16 +3329,19 @@ app.get('/scan/go', scanLimiter, async (req, res) => {
       totalFindings,
       totalCritical,
       totalHigh,
+      knownVulnerabilities: knownVulns,
       goWarnings,
-      verdict: totalFindings === 0 && goWarnings.length === 0
-        ? `✅ Module ${mod}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues.`
-        : totalCritical > 0
-          ? `🔴 CRITICAL issues in ${mod}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.`
-          : goWarnings.some(w => w.severity === 'high')
-            ? `🔶 ${mod}@${latest} uses unsafe patterns (CGo, unsafe package, or plugin loading). Review carefully.`
-            : totalHigh > 0
-              ? `🔶 High risk findings in ${mod}@${latest} — ${totalHigh} high severity issue(s). Review recommended.`
-              : `⚠️ ${totalFindings} finding(s) in ${mod}@${latest}. Minor concerns detected.`,
+      verdict: (totalFindings === 0 && goWarnings.length === 0 && !hasVulns
+        ? `✅ Module ${mod}@${latest} appears clean — ${fileResults.length} file(s) scanned, no issues, no known CVEs.`
+        : hasVulns && totalFindings === 0 && goWarnings.length === 0
+          ? `🔴 ${mod}@${latest} has ${knownVulns.count} known vulnerability/vulnerabilities (${knownVulns.worstSeverity}). Update to a patched version.`
+          : totalCritical > 0
+            ? `🔴 CRITICAL issues in ${mod}@${latest} — ${totalCritical} critical finding(s). Do NOT use without manual audit.${vulnSuffix}`
+            : goWarnings.some(w => w.severity === 'high')
+              ? `🔶 ${mod}@${latest} uses unsafe patterns (CGo, unsafe package, or plugin loading). Review carefully.${vulnSuffix}`
+              : totalHigh > 0
+                ? `🔶 High risk findings in ${mod}@${latest} — ${totalHigh} high severity issue(s). Review recommended.${vulnSuffix}`
+                : `⚠️ ${totalFindings} finding(s) in ${mod}@${latest}. Minor concerns detected.${vulnSuffix}`),
       files: fileResults,
     });
   } catch (err) {
@@ -3564,6 +3633,74 @@ app.post('/scan/mcp', scanLimiter, (req, res) => {
             : `⚠️ ${totalFindings} finding(s) in "${name}". Minor concerns detected — review recommended.`,
     reportUrl: `/report/${id}`,
     tools: toolResults,
+  });
+});
+
+// --- Known Vulnerability Lookup (OSV.dev) ---
+// GET /scan/vulns — check any package for known CVEs via the OSV database
+// Supports: npm, PyPI, crates.io, Go, Maven, NuGet, Packagist, RubyGems, Hex
+app.get('/scan/vulns', scanLimiter, async (req, res) => {
+  const pkg = req.query.package;
+  const ecosystem = req.query.ecosystem;
+  const version = req.query.version || null;
+
+  if (!pkg || !ecosystem) {
+    return res.status(400).json({
+      error: 'package and ecosystem query parameters are required',
+      examples: [
+        '/scan/vulns?package=express&ecosystem=npm',
+        '/scan/vulns?package=flask&ecosystem=PyPI',
+        '/scan/vulns?package=serde&ecosystem=crates.io',
+        '/scan/vulns?package=golang.org/x/net&ecosystem=Go&version=0.17.0',
+      ],
+      supportedEcosystems: ['npm', 'PyPI', 'crates.io', 'Go', 'Maven', 'NuGet', 'Packagist', 'RubyGems', 'Hex'],
+      hint: 'Returns known vulnerabilities from the OSV (Open Source Vulnerabilities) database, including CVEs and GHSA advisories.',
+    });
+  }
+
+  // Normalize ecosystem name
+  const ecosystemMap = {
+    'npm': 'npm', 'node': 'npm', 'javascript': 'npm',
+    'pypi': 'PyPI', 'python': 'PyPI', 'pip': 'PyPI',
+    'crates.io': 'crates.io', 'cargo': 'crates.io', 'rust': 'crates.io',
+    'go': 'Go', 'golang': 'Go',
+    'maven': 'Maven', 'java': 'Maven',
+    'nuget': 'NuGet', 'dotnet': 'NuGet', '.net': 'NuGet',
+    'packagist': 'Packagist', 'php': 'Packagist', 'composer': 'Packagist',
+    'rubygems': 'RubyGems', 'ruby': 'RubyGems', 'gem': 'RubyGems',
+    'hex': 'Hex', 'elixir': 'Hex', 'erlang': 'Hex',
+  };
+  const normalizedEcosystem = ecosystemMap[ecosystem.toLowerCase()] || ecosystem;
+
+  const osvResult = await queryOSV(pkg, normalizedEcosystem, version);
+  const formatted = formatOSVVulns(osvResult);
+
+  // Risk assessment based on vulnerabilities
+  let riskLevel = 'clean';
+  if (formatted.count > 0) {
+    if (formatted.worstSeverity === 'critical') riskLevel = 'critical';
+    else if (formatted.worstSeverity === 'high') riskLevel = 'high';
+    else if (formatted.worstSeverity === 'medium') riskLevel = 'moderate';
+    else riskLevel = 'low';
+  }
+
+  res.json({
+    package: pkg,
+    ecosystem: normalizedEcosystem,
+    version: version || 'latest (all versions)',
+    source: 'OSV.dev (Open Source Vulnerabilities)',
+    riskLevel,
+    ...formatted,
+    verdict: formatted.count === 0
+      ? `✅ No known vulnerabilities found for ${pkg} in ${normalizedEcosystem}.`
+      : formatted.worstSeverity === 'critical'
+        ? `🔴 ${formatted.count} known vulnerability/vulnerabilities in ${pkg} — ${formatted.severityBreakdown.critical} CRITICAL. Update immediately.`
+        : formatted.worstSeverity === 'high'
+          ? `🔶 ${formatted.count} known vulnerability/vulnerabilities in ${pkg} — ${formatted.severityBreakdown.high} high severity. Update recommended.`
+          : `⚠️ ${formatted.count} known vulnerability/vulnerabilities in ${pkg}. Review advisories.`,
+    links: {
+      osv: `https://osv.dev/list?ecosystem=${encodeURIComponent(normalizedEcosystem)}&q=${encodeURIComponent(pkg)}`,
+    },
   });
 });
 
@@ -4233,6 +4370,127 @@ function fetchJsonLarge(url) {
       res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Invalid JSON')); } });
     }).on('error', (e) => { clearTimeout(timeout); reject(e); });
   });
+}
+
+// --- OSV (Open Source Vulnerabilities) Integration ---
+// Query the OSV.dev API for known vulnerabilities in packages
+// Supports npm, PyPI, crates.io, Go, and more
+async function queryOSV(packageName, ecosystem, version) {
+  try {
+    const payload = {
+      package: { name: packageName, ecosystem },
+    };
+    if (version) payload.version = version;
+
+    const body = JSON.stringify(payload);
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { resolve({ vulns: [] }); }, 8000); // Graceful timeout
+      const req = https.request({
+        hostname: 'api.osv.dev',
+        path: '/v1/query',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'User-Agent': 'SkillAudit/1.1',
+        },
+        timeout: 8000,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; if (data.length > 1024 * 512) { res.destroy(); clearTimeout(timeout); resolve({ vulns: [] }); } });
+        res.on('end', () => {
+          clearTimeout(timeout);
+          try {
+            const parsed = JSON.parse(data);
+            resolve(parsed);
+          } catch {
+            resolve({ vulns: [] });
+          }
+        });
+      });
+      req.on('error', () => { clearTimeout(timeout); resolve({ vulns: [] }); });
+      req.on('timeout', () => { clearTimeout(timeout); resolve({ vulns: [] }); });
+      req.write(body);
+      req.end();
+    });
+  } catch {
+    return { vulns: [] };
+  }
+}
+
+// Transform raw OSV vulns into a clean summary
+function formatOSVVulns(osvResult) {
+  const vulns = osvResult.vulns || [];
+  if (vulns.length === 0) return { count: 0, vulnerabilities: [] };
+
+  const formatted = vulns.slice(0, 20).map(v => {
+    // Extract severity from database_specific or severity array
+    let severity = 'unknown';
+    let cvssScore = null;
+    if (v.severity && v.severity.length > 0) {
+      for (const s of v.severity) {
+        if (s.type === 'CVSS_V3') {
+          const scoreMatch = s.score.match(/CVSS:3[^/]*\/[^/]*(?:.*?)/);
+          // Extract base score from vector string
+          const numMatch = s.score.match(/(\d+\.\d+)/);
+          if (numMatch) cvssScore = parseFloat(numMatch[1]);
+        }
+      }
+    }
+    if (v.database_specific?.severity) {
+      severity = v.database_specific.severity.toLowerCase();
+    } else if (cvssScore !== null) {
+      severity = cvssScore >= 9.0 ? 'critical' : cvssScore >= 7.0 ? 'high' : cvssScore >= 4.0 ? 'medium' : 'low';
+    }
+
+    // Extract aliases (CVE IDs)
+    const cves = (v.aliases || []).filter(a => a.startsWith('CVE-'));
+    const ghsas = (v.aliases || []).filter(a => a.startsWith('GHSA-'));
+
+    // Extract affected version ranges
+    const affected = (v.affected || []).flatMap(a =>
+      (a.ranges || []).flatMap(r =>
+        (r.events || []).filter(e => e.introduced || e.fixed).map(e => {
+          if (e.introduced) return `introduced: ${e.introduced}`;
+          if (e.fixed) return `fixed: ${e.fixed}`;
+          return null;
+        }).filter(Boolean)
+      )
+    );
+
+    // Get reference URLs
+    const refs = (v.references || []).slice(0, 3).map(r => r.url);
+
+    return {
+      id: v.id,
+      summary: (v.summary || v.details || 'No description').substring(0, 300),
+      severity,
+      cvssScore,
+      cves: cves.length > 0 ? cves : undefined,
+      ghsas: ghsas.length > 0 ? ghsas : undefined,
+      published: v.published || null,
+      modified: v.modified || null,
+      affectedVersions: affected.length > 0 ? affected.slice(0, 6) : undefined,
+      references: refs.length > 0 ? refs : undefined,
+    };
+  });
+
+  // Severity summary
+  const sevCounts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+  formatted.forEach(v => { sevCounts[v.severity] = (sevCounts[v.severity] || 0) + 1; });
+
+  // Worst severity
+  const sevOrder = ['critical', 'high', 'medium', 'low', 'unknown'];
+  const worstSeverity = sevOrder.find(s => sevCounts[s] > 0) || 'unknown';
+
+  return {
+    count: vulns.length,
+    showing: formatted.length,
+    worstSeverity,
+    severityBreakdown: sevCounts,
+    vulnerabilities: formatted,
+  };
 }
 
 async function discoverSkillFiles(owner, repo, branch) {

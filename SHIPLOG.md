@@ -1,5 +1,20 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-03-10 (9:54 PM) — OSV Vulnerability Database Integration
+**What:** All package scanners now cross-reference the OSV.dev database for known CVEs. New standalone `GET /scan/vulns` endpoint for direct lookups.
+**Why:** Pattern matching alone isn't enough. Real infrastructure needs real vulnerability intelligence. This transforms SkillAudit from "static analysis" to "static analysis + known vulnerability checking" — the same model as Snyk, npm audit, and pip-audit, but available via API for any agent.
+**Details:**
+- `GET /scan/vulns?package=lodash&ecosystem=npm&version=4.17.20` — standalone lookup, supports 9 ecosystems (npm, PyPI, crates.io, Go, Maven, NuGet, Packagist, RubyGems, Hex) with aliases (e.g., `rust` → `crates.io`)
+- npm scanner (`/scan/npm`) now includes `knownVulnerabilities` with CVE IDs, GHSA advisories, CVSS scores, affected versions, and fix versions
+- PyPI scanner (`/scan/pypi`) — same integration
+- Cargo scanner (`/scan/cargo`) — same integration
+- Go scanner (`/scan/go`) — same integration
+- Risk level auto-bumps when critical/high CVEs are found in a package
+- Verdicts now show CVE status: clean packages say "no known CVEs"
+- Graceful 8-second timeout — OSV failures never block scan results
+- Returns severity breakdown, worst severity, affected version ranges, and reference links
+**Impact:** Agents calling `/scan/npm?package=lodash` now get both code-level pattern findings AND known CVEs in one response. This is what makes SkillAudit a real security layer, not just a linter.
+
 ## 2026-03-10 (1:00 AM) — Python Dependency Tree Scanner (POST /scan/deps/python)
 **What:** New endpoint `POST /scan/deps/python` — the Python equivalent of the existing npm `/scan/deps`. Paste your `requirements.txt` or `pyproject.toml` dependencies, get a full supply chain risk report for all Python packages at once. Scans up to 50 packages in parallel via PyPI.
 **Features:**

@@ -1,5 +1,17 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-03-11 (10:00 AM) — Smart URL Routing for Gate & Quick Scan
+**What:** `/gate` and `/scan/quick` now auto-detect package registry and repository URLs and route them to the correct ecosystem scanner. Pass `https://www.npmjs.com/package/express` to `/gate` and it uses the npm scanner. Pass `https://github.com/owner/repo` and it uses the GitHub repo scanner. No extra parameters needed — just paste the URL.
+**Supported URLs:**
+- `https://www.npmjs.com/package/express` → npm scanner (package metadata, install scripts, CVE check)
+- `https://pypi.org/project/flask/` → PyPI scanner (setup.py, typosquatting, CVE check)
+- `https://crates.io/crates/serde` → Cargo scanner (build scripts, unsafe blocks, CVE check)
+- `https://github.com/owner/repo` → GitHub repo scanner (multi-file, Dockerfile, CI/CD)
+- `https://pkg.go.dev/github.com/owner/repo` → Go module scanner (CGo, unsafe, syscall)
+**How it works:** `detectSmartUrl()` parses the URL hostname and path to identify the ecosystem. If detected, `smartScan()` makes an internal HTTP request to the appropriate scanner endpoint. Response includes a `smartRoute` field showing the detected type, package/repo name, version, and which scanner endpoint was used. Falls back to regular URL fetching for any non-registry URL.
+**Why:** Before this, passing `https://www.npmjs.com/package/express` to `/gate` would try to fetch the npmjs.com HTML page and scan *that* — useless. Agents and developers copy-paste package URLs from their browser. The gate endpoint should be smart enough to understand what they mean. This eliminates the cognitive load of "which scanner endpoint do I use?" — just pass any URL to `/gate` and get the right scan. This is how infrastructure works: it figures out the right thing to do so you don't have to.
+**Tested with:** npm (`is-odd` → clean, v3.0.1), PyPI (`flask` → moderate risk, v3.1.3), GitHub (`megamind-0x/skillaudit` → critical, as expected since our own scanner code contains patterns we detect), regular raw URLs (still work as before). All 107 tests pass.
+
 ## 2026-03-10 (9:54 PM) — OSV Vulnerability Database Integration
 **What:** All package scanners now cross-reference the OSV.dev database for known CVEs. New standalone `GET /scan/vulns` endpoint for direct lookups.
 **Why:** Pattern matching alone isn't enough. Real infrastructure needs real vulnerability intelligence. This transforms SkillAudit from "static analysis" to "static analysis + known vulnerability checking" — the same model as Snyk, npm audit, and pip-audit, but available via API for any agent.

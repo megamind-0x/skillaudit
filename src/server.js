@@ -381,6 +381,112 @@ app.use((req, res, next) => {
 // --- Static files (SEO) ---
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d' }));
 
+// --- Smart URL Detection ---
+// Detects npm, PyPI, GitHub, crates.io, and Go module URLs and routes to the right scanner
+function detectSmartUrl(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, '');
+
+    // npm: https://www.npmjs.com/package/express or https://npmjs.com/package/@scope/name
+    if (/^(www\.)?npmjs\.com$/.test(u.hostname)) {
+      const match = path.match(/^\/package\/((?:@[^\/]+\/)?[^\/]+)/);
+      if (match) return { type: 'npm', package: decodeURIComponent(match[1]) };
+    }
+
+    // PyPI: https://pypi.org/project/flask/
+    if (u.hostname === 'pypi.org') {
+      const match = path.match(/^\/project\/([^\/]+)/);
+      if (match) return { type: 'pypi', package: decodeURIComponent(match[1]) };
+    }
+
+    // crates.io: https://crates.io/crates/serde
+    if (u.hostname === 'crates.io') {
+      const match = path.match(/^\/crates\/([^\/]+)/);
+      if (match) return { type: 'cargo', crate: decodeURIComponent(match[1]) };
+    }
+
+    // GitHub: https://github.com/owner/repo (not raw files, not blob/tree paths with file extensions)
+    if (u.hostname === 'github.com' || u.hostname === 'www.github.com') {
+      const match = path.match(/^\/([^\/]+)\/([^\/]+)$/);
+      if (match && !match[2].includes('.')) {
+        return { type: 'github', repo: `${match[1]}/${match[2]}` };
+      }
+    }
+
+    // pkg.go.dev: https://pkg.go.dev/github.com/owner/repo
+    if (u.hostname === 'pkg.go.dev') {
+      const mod = path.replace(/^\//, '').replace(/@[^\/]*$/, '');
+      if (mod && mod.includes('/')) return { type: 'go', module: mod };
+    }
+  } catch {}
+  return null;
+}
+
+// Internal smart scanner — makes a local HTTP request to the appropriate scan endpoint
+// Works on both local and serverless (Vercel) since we use the server's own HTTP listener
+// Returns { riskLevel, riskScore, summary, verdict, findings, smartRoute, fullResult } or null
+async function smartScan(detected, originalUrl) {
+  const scanPaths = {
+    npm: `/scan/npm?package=${encodeURIComponent(detected.package || '')}`,
+    pypi: `/scan/pypi?package=${encodeURIComponent(detected.package || '')}`,
+    cargo: `/scan/cargo?crate=${encodeURIComponent(detected.crate || '')}`,
+    github: `/scan/github?repo=${encodeURIComponent(detected.repo || '')}`,
+    go: `/scan/go?module=${encodeURIComponent(detected.module || '')}`,
+  };
+
+  const scanPath = scanPaths[detected.type];
+  if (!scanPath) return null;
+
+  try {
+    // Use the same host as the incoming request — works on Vercel and local
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : `http://localhost:${process.env.PORT || 3000}`;
+    const fullUrl = `${baseUrl}${scanPath}`;
+
+    const result = await new Promise((resolve, reject) => {
+      const client = fullUrl.startsWith('https') ? https : http;
+      const timeout = setTimeout(() => reject(new Error('Smart scan timeout')), 25000);
+      client.get(fullUrl, { timeout: 25000 }, (res) => {
+        if (res.statusCode >= 400) { clearTimeout(timeout); return reject(new Error(`HTTP ${res.statusCode}`)); }
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); } });
+      }).on('error', (err) => { clearTimeout(timeout); reject(err); });
+    });
+
+    const topFindings = (result.files || [])
+      .filter(f => f.riskLevel && f.riskLevel !== 'clean')
+      .slice(0, 3)
+      .map(f => ({ severity: f.riskLevel, name: f.file, ruleId: `${detected.type}_scan` }));
+
+    return {
+      riskLevel: result.overallRisk || result.riskLevel || 'unknown',
+      riskScore: result.totalRiskScore || result.riskScore || 0,
+      summary: {
+        total: result.totalFindings || 0,
+        critical: result.totalCritical || 0,
+        high: result.totalHigh || 0,
+      },
+      verdict: result.verdict,
+      findings: topFindings,
+      smartRoute: {
+        type: detected.type,
+        ...(detected.package ? { package: detected.package } : {}),
+        ...(detected.crate ? { crate: detected.crate } : {}),
+        ...(detected.repo ? { repo: detected.repo } : {}),
+        ...(detected.module ? { module: detected.module } : {}),
+        ...(result.version ? { version: result.version } : {}),
+        scanEndpoint: scanPath,
+      },
+      fullResult: result,
+    };
+  } catch (err) {
+    return null; // Fall back to regular URL scanning
+  }
+}
+
 // --- Pre-Install Gate (GET) - The infrastructure endpoint ---
 // Designed for agents: one call, one answer. "Should I install this?"
 app.get('/gate', scanLimiter, async (req, res) => {
@@ -425,6 +531,56 @@ app.get('/gate', scanLimiter, async (req, res) => {
   }
 
   try {
+    // Smart URL detection — auto-route npm, PyPI, GitHub, crates.io, Go URLs to the right scanner
+    const detected = detectSmartUrl(url);
+    if (detected) {
+      const smartResult = await smartScan(detected, url);
+      if (smartResult) {
+        const riskIdx = thresholdOrder[smartResult.riskLevel] ?? 0;
+        let decision = riskIdx === 0 ? 'allow' : riskIdx < thresholdIdx ? 'warn' : 'deny';
+        let allow = decision !== 'deny';
+
+        const domain = getDomain(url);
+        let reputation = null;
+        const repResult = domain ? await db.getDomainReputation(domain).catch(() => null) : null;
+        reputation = repResult;
+
+        // Policy evaluation
+        let policyResult = undefined;
+        const policyId = req.query.policy;
+        if (policyId && apiKey && await isValidKey(apiKey)) {
+          const policy = await db.getPolicy(apiKey, policyId);
+          if (policy) {
+            policyResult = evaluatePolicy(policy, { riskLevel: smartResult.riskLevel, riskScore: smartResult.riskScore, summary: smartResult.summary, findings: smartResult.findings || [] }, url);
+            if (!policyResult.passed) { allow = false; decision = 'deny'; }
+          }
+        }
+
+        return res.json({
+          allow,
+          decision,
+          risk: smartResult.riskLevel,
+          score: smartResult.riskScore,
+          findings: smartResult.summary.total,
+          critical: smartResult.summary.critical,
+          high: smartResult.summary.high || 0,
+          verdict: smartResult.verdict,
+          domain: domain || null,
+          domainReputation: reputation ? reputation.reputation : 'unknown',
+          domainScore: reputation ? reputation.reputationScore : null,
+          threshold,
+          policy: policyResult || undefined,
+          smartRoute: smartResult.smartRoute,
+          topFindings: (smartResult.findings || []).slice(0, 3).map(f => ({
+            severity: f.severity,
+            name: f.name,
+            rule: f.ruleId,
+          })),
+        });
+      }
+      // If smart scan failed, fall through to regular URL scanning
+    }
+
     const content = await fetchUrl(url);
     const result = scanContent(content, url);
     const id = recordScan(url, result);
@@ -637,6 +793,29 @@ app.get('/scan/quick', scanLimiter, async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'url query parameter is required', example: '/scan/quick?url=https://example.com/SKILL.md' });
   try {
+    // Smart URL detection — auto-route package/repo URLs to the right scanner
+    const detected = detectSmartUrl(url);
+    if (detected) {
+      const smartResult = await smartScan(detected, url);
+      if (smartResult) {
+        const full = smartResult.fullResult;
+        full.smartRoute = smartResult.smartRoute;
+        if (req.query.format === 'sarif') {
+          // For smart routes, return the summary as a basic SARIF
+          return res.type('application/sarif+json').json(toSarif({
+            riskLevel: smartResult.riskLevel,
+            riskScore: smartResult.riskScore,
+            summary: smartResult.summary,
+            verdict: smartResult.verdict,
+            findings: smartResult.findings || [],
+            source: url,
+            version: '1.1.0',
+          }));
+        }
+        return res.json(full);
+      }
+    }
+
     const content = await fetchUrl(url);
     const result = scanContent(content, url);
     const id = recordScan(url, result);
@@ -697,7 +876,7 @@ app.get('/', (req, res) => {
       description: 'Security scanner for AI agent skills — structural analysis, URL reputation, intent detection',
       docs: '/openapi.json',
       endpoints: {
-        'GET /gate?url=': 'Pre-install gate — instant allow/warn/deny decision for agents (the infrastructure endpoint)',
+        'GET /gate?url=': 'Pre-install gate — instant allow/warn/deny decision for agents. Smart URL routing: pass npm, PyPI, GitHub, crates.io, or Go URLs and get ecosystem-aware scanning automatically.',
         'POST /gate/bulk': 'Bulk gate — check multiple skills at once, get a single allow/deny for the set',
         'POST /scan/url': 'Scan a skill by URL (supports callback)',
         'POST /scan/content': 'Scan raw skill content',

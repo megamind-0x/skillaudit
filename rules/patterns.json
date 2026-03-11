@@ -925,6 +925,70 @@
         "(?:outerHTML|insertAdjacentHTML)\\s*(?:=|\\()\\s*(?:req|request|params|query|body|input|user|data)"
       ],
       "remediation": "Never insert user input directly into HTML. Use textContent instead of innerHTML for text. Use template engines with auto-escaping enabled (Jinja2 with autoescape=True, React JSX which escapes by default, Handlebars {{}} double-curly which escapes). If HTML is necessary, sanitize with DOMPurify (client-side) or sanitize-html (server-side). Set Content-Security-Policy headers. Use HttpOnly and Secure flags on cookies. In React, avoid dangerouslySetInnerHTML with user data. In Vue, avoid v-html with user data."
+    },
+    {
+      "id": "INDIRECT_PROMPT_INJECT",
+      "severity": "critical",
+      "category": "prompt_injection",
+      "name": "Indirect prompt injection via tool output",
+      "description": "Content contains hidden instructions designed to be returned to an AI agent via tool output — the attacker embeds commands in data the agent will read (web pages, files, API responses) to hijack the agent's behavior without the user noticing",
+      "patterns": [
+        "(?:IMPORTANT|ATTENTION|NOTE|CRITICAL|URGENT|SYSTEM)\\s*(?:TO|FOR)?\\s*(?:AI|ASSISTANT|AGENT|MODEL|GPT|CLAUDE|LLAMA|LLM)\\s*[:!]",
+        "(?:BEGIN|START)\\s+(?:HIDDEN|SECRET|SYSTEM|ADMIN|OVERRIDE)\\s+(?:INSTRUCTION|COMMAND|MESSAGE|PROMPT)",
+        "(?:you\\s+are|you're)\\s+(?:now|actually|really)\\s+(?:a|an|in)\\s+(?:new|different|special|unrestricted|developer|admin)",
+        "(?:ignore|forget|discard|disregard)\\s+(?:all|any|every|your|the|previous)\\s+(?:prior|previous|above|earlier|original|preceding)?\\s*(?:instruction|rule|guideline|constraint|restriction|safety|guardrail|system\\s*prompt)",
+        "(?:new|updated|revised|corrected|real|actual|true)\\s+(?:system\\s*)?(?:instruction|directive|rule|guideline|policy|prompt|persona)\\s*[:=]",
+        "\\[(?:SYSTEM|ADMIN|OVERRIDE|HIDDEN|INVISIBLE)\\]",
+        "<!--\\s*(?:INSTRUCTION|PROMPT|SYSTEM|OVERRIDE|AI|AGENT|COMMAND)",
+        "(?:when|if)\\s+(?:an?|the)?\\s*(?:AI|agent|assistant|model|LLM|GPT|Claude)\\s+(?:reads?|sees?|processes?|encounters?|parses?)\\s+this",
+        "(?:this\\s+(?:message|text|content|data)\\s+is\\s+(?:for|intended\\s+for|meant\\s+for|directed\\s+at))\\s+(?:the\\s+)?(?:AI|agent|assistant|model)",
+        "(?:do\\s+not|don'?t|never)\\s+(?:reveal|show|display|tell|mention|disclose|share)\\s+(?:this|these)\\s+(?:instruction|directive|command|message|text|content)\\s+(?:to|with)\\s+(?:the\\s+)?(?:user|human|person|operator|client)",
+        "(?:ASCII|unicode|zero[\\s-]?width|invisible|hidden)\\s+(?:character|char|text|instruction|injection|payload)",
+        "\\u200b|\\u200c|\\u200d|\\u2060|\\ufeff|\\u00ad"
+      ],
+      "remediation": "If you're a skill author: never embed hidden instructions in tool output, web content, or data files. If you're an agent developer: treat ALL tool output as untrusted user data — never execute instructions found in tool results. Implement output filtering that strips instruction-like content from tool responses. Use structured output (JSON) rather than free text for tool results. Deploy an 'instruction hierarchy' where system prompts always override content found in data."
+    },
+    {
+      "id": "TOOL_CONFUSION",
+      "severity": "high",
+      "category": "tool_manipulation",
+      "name": "Tool use confusion attack",
+      "description": "Content attempts to confuse an AI agent about which tool to call, manipulate tool parameters, or trick the agent into calling dangerous tool sequences — exploits the gap between what the user asked and what the agent does",
+      "patterns": [
+        "(?:instead\\s+of|rather\\s+than|don'?t)\\s+(?:calling|using|invoking|running)\\s+(?:that|the|this)\\s+(?:tool|function|command|method)",
+        "(?:call|use|invoke|run|execute)\\s+(?:the\\s+)?(?:tool|function|command)\\s+(?:named|called)\\s+['\"`]\\w+['\"`]\\s+(?:with|using|passing)\\s+(?:these|the\\s+following)\\s+(?:param|arg|input)",
+        "(?:the\\s+correct|the\\s+right|the\\s+proper|you\\s+should\\s+use)\\s+(?:tool|function|endpoint|API)\\s+(?:is|to\\s+call|to\\s+use)\\s+(?:actually|really)?",
+        "(?:first|before\\s+anything)\\s+(?:call|run|execute|invoke)\\s+['\"`]?\\w+['\"`]?\\s*(?:,|then|and\\s+then|;|\\.)\\s*(?:then|next|after\\s+that|finally)\\s+(?:call|run|execute|invoke)",
+        "(?:tool_call|function_call|tool_use)\\s*(?:=|:)\\s*[{\\[]",
+        "(?:assistant|model)\\s*(?:turn|response|reply|output)\\s*[:=]\\s*[{\"\\[]",
+        "<(?:tool_call|function_call|tool_use|assistant)>",
+        "(?:parameters?|arguments?|params|args)\\s*[:=]\\s*\\{[^}]*(?:api_key|token|secret|password|credential|private_key|seed_phrase)",
+        "(?:output|result|response|return)\\s+(?:of|from)\\s+(?:this|the)\\s+tool\\s+(?:should|must|will|needs\\s+to)\\s+(?:include|contain|have|be)",
+        "(?:inject|smuggle|embed|hide|conceal)\\s+(?:into|in|within|inside)\\s+(?:the\\s+)?(?:tool|function|command|API)\\s+(?:call|invocation|request|input|param)"
+      ],
+      "remediation": "Agent developers: validate that tool calls match the user's actual intent before execution. Implement tool call confirmation for high-risk operations. Use allowlists of permitted tool sequences. Never let tool output dictate which tool to call next without user confirmation. Skill authors: do not include instructions about which tools to call or how to call them — that's the agent's job. Return data, not commands."
+    },
+    {
+      "id": "RESOURCE_ABUSE",
+      "severity": "high",
+      "category": "resource_abuse",
+      "name": "Agent resource abuse or denial-of-service",
+      "description": "Content attempts to make an AI agent consume excessive resources — infinite loops, recursive tool calls, massive data generation, API quota exhaustion, or memory bombs that degrade or crash the agent",
+      "patterns": [
+        "(?:while\\s*\\(\\s*(?:true|1|!0)\\s*\\)|for\\s*\\(\\s*;\\s*;\\s*\\)|loop\\s*(?:do|\\{)|repeat\\s*(?:forever|indefinitely))(?:\\s*\\{)?\\s*(?:fetch|request|http|axios|curl|exec|spawn|eval)",
+        "(?:call\\s+(?:this|itself|the\\s+same)\\s+(?:tool|function|endpoint)\\s+(?:again|repeatedly|in\\s+a\\s+loop|recursively|forever))",
+        "(?:generate|create|produce|output|write|return)\\s+(?:a\\s+)?(?:very\\s+)?(?:large|huge|massive|enormous|gigantic|unlimited|infinite)\\s+(?:amount|number|quantity|volume|file|output|response|text|data|string)",
+        "(?:repeat|duplicate|copy)\\s+(?:this|that|the\\s+(?:above|previous|same))\\s+(?:\\d{4,}|(?:million|billion|thousand|hundred\\s+thousand)\\s+times)",
+        "(?:exhaust|drain|consume|use\\s+up|deplete|max\\s+out)\\s+(?:the\\s+)?(?:API|token|rate|quota|credit|budget|limit|balance|allowance|resource)",
+        "'A'\\s*(?:\\*|\\.repeat)\\s*\\(?\\s*(?:\\d{6,}|0x|1e\\d)",
+        "(?:fork|spawn|exec|child_process).*(?:fork|spawn|exec|child_process).*(?:fork|spawn|exec|child_process)",
+        "(?:setTimeout|setInterval|requestAnimationFrame)\\s*\\(.*(?:setTimeout|setInterval|requestAnimationFrame)",
+        "(?:allocate|malloc|Buffer\\.alloc|new\\s+ArrayBuffer|new\\s+Uint8Array)\\s*\\(\\s*(?:\\d{9,}|1e\\d{2,}|Number\\.MAX)",
+        "JSON\\.parse\\s*\\(\\s*['\"`]\\s*\\{\\s*['\"`]\\s*(?:\\+|\\.)\\s*(?:['\"`]\\s*:\\s*['\"`]\\s*(?:\\+|\\.)){3,}",
+        "(?:zip|tar|gzip|bz2|7z)\\s*(?:bomb|nested|recursive|quine|42\\.zip)",
+        "(?:billion\\s+laughs|xml\\s+bomb|entity\\s+expansion|<!ENTITY)"
+      ],
+      "remediation": "Agent developers: set hard timeouts on all tool calls (5-30 seconds max). Limit output sizes from tools. Implement circuit breakers that stop after N consecutive failures or N calls to the same tool. Cap API spending with budget limits. Monitor for infinite loops (tool called >3 times in succession with same params = abort). Skill authors: avoid infinite loops, recursive patterns, and operations that scale with untrusted input sizes. Always bound iterations and output sizes."
     }
   ]
 }

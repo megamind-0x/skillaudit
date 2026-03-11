@@ -1,5 +1,14 @@
 # SHIPLOG — SkillAudit Shipping Log
 
+## 2026-03-11 (10:20 PM) — 3 New Detection Rules for AI Agent Attack Vectors
+**What:** Added 3 new rule categories targeting 2025-era AI agent attacks, bringing SkillAudit to **50 rules, 490 patterns**.
+**New rules:**
+1. **INDIRECT_PROMPT_INJECT** (critical, 12 patterns) — Detects hidden instructions embedded in tool outputs, web pages, and data files designed to hijack an agent's behavior. Catches: `IMPORTANT TO AI AGENT:` headers, `<!-- INSTRUCTION` HTML injections, `[SYSTEM]` tags, `BEGIN HIDDEN INSTRUCTION` blocks, persona override attempts, anti-disclosure instructions, zero-width unicode injection.
+2. **TOOL_CONFUSION** (high, 10 patterns) — Detects attempts to manipulate which tools an agent calls or how. Catches: tool redirection ("instead of calling that tool, use this one"), fake `<tool_call>` markup injection, credential smuggling via tool parameters, forced tool sequencing.
+3. **RESOURCE_ABUSE** (high, 12 patterns) — Detects attempts to make agents consume excessive resources. Catches: infinite loops with network calls (`while(true) { fetch(...) }`), recursive tool invocation ("call this tool again repeatedly"), memory bombs (`Buffer.alloc(1e12)`), API quota exhaustion, zip bombs, billion laughs XML attacks.
+**Why:** The threat landscape for AI agents has evolved beyond credential theft and data exfiltration. Modern attacks target the agent's *reasoning* — tricking it into calling wrong tools, following hidden instructions in data, or burning through API credits. These 3 rules cover the attack categories that existing security tools miss entirely because they weren't designed for agent architectures. All include detailed remediation guidance.
+**Tested:** 9 attack payloads detected (3 per rule), zero false positives on clean content. All 107 existing tests still pass.
+
 ## 2026-03-11 (10:00 AM) — Smart URL Routing for Gate & Quick Scan
 **What:** `/gate` and `/scan/quick` now auto-detect package registry and repository URLs and route them to the correct ecosystem scanner. Pass `https://www.npmjs.com/package/express` to `/gate` and it uses the npm scanner. Pass `https://github.com/owner/repo` and it uses the GitHub repo scanner. No extra parameters needed — just paste the URL.
 **Supported URLs:**

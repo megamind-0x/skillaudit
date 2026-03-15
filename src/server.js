@@ -419,6 +419,14 @@ function detectSmartUrl(url) {
       const mod = path.replace(/^\//, '').replace(/@[^\/]*$/, '');
       if (mod && mod.includes('/')) return { type: 'go', module: mod };
     }
+
+    // Hugging Face: https://huggingface.co/owner/model
+    if (u.hostname === 'huggingface.co' || u.hostname === 'www.huggingface.co') {
+      const match = path.match(/^\/([^\/]+)\/([^\/]+)$/);
+      if (match && !['spaces', 'datasets', 'docs', 'blog', 'papers'].includes(match[1])) {
+        return { type: 'hf', model: `${match[1]}/${match[2]}` };
+      }
+    }
   } catch {}
   return null;
 }
@@ -433,6 +441,7 @@ async function smartScan(detected, originalUrl) {
     cargo: `/scan/cargo?crate=${encodeURIComponent(detected.crate || '')}`,
     github: `/scan/github?repo=${encodeURIComponent(detected.repo || '')}`,
     go: `/scan/go?module=${encodeURIComponent(detected.module || '')}`,
+    hf: `/scan/hf?model=${encodeURIComponent(detected.model || '')}`,
   };
 
   const scanPath = scanPaths[detected.type];
@@ -545,14 +554,16 @@ app.get('/gate', scanLimiter, async (req, res) => {
         const repResult = domain ? await db.getDomainReputation(domain).catch(() => null) : null;
         reputation = repResult;
 
-        // Policy evaluation
+        // Policy evaluation (presets work without API key)
         let policyResult = undefined;
         const policyId = req.query.policy;
-        if (policyId && apiKey && await isValidKey(apiKey)) {
-          const policy = await db.getPolicy(apiKey, policyId);
+        if (policyId) {
+          const policy = await resolvePolicy(policyId, apiKey);
           if (policy) {
-            policyResult = evaluatePolicy(policy, { riskLevel: smartResult.riskLevel, riskScore: smartResult.riskScore, summary: smartResult.summary, findings: smartResult.findings || [] }, url);
+            policyResult = evaluatePolicy(policy, { riskLevel: smartResult.riskLevel, riskScore: smartResult.riskScore, summary: smartResult.summary, findings: smartResult.findings || [], capabilityStats: { threatChains: 0 } }, url);
             if (!policyResult.passed) { allow = false; decision = 'deny'; }
+          } else {
+            policyResult = { error: `Policy '${policyId}' not found. Built-in presets: strict, standard, permissive, aiops` };
           }
         }
 
@@ -617,20 +628,19 @@ app.get('/gate', scanLimiter, async (req, res) => {
       };
     }
 
-    // Policy evaluation (if specified)
+    // Policy evaluation (presets work without API key)
     let policyResult = undefined;
     const policyId = req.query.policy;
-    if (policyId && apiKey && await isValidKey(apiKey)) {
-      const policy = await db.getPolicy(apiKey, policyId);
+    if (policyId) {
+      const policy = await resolvePolicy(policyId, apiKey);
       if (policy) {
         policyResult = evaluatePolicy(policy, result, url);
-        // Policy can override the decision
         if (!policyResult.passed) {
           allow = false;
           decision = 'deny';
         }
       } else {
-        policyResult = { error: `Policy '${policyId}' not found` };
+        policyResult = { error: `Policy '${policyId}' not found. Built-in presets: strict, standard, permissive, aiops` };
       }
     }
 
@@ -922,7 +932,8 @@ app.get('/', (req, res) => {
         'POST /watchlist/check': 'Re-scan all watched URLs, detect risk changes (API key required)',
         'DELETE /watchlist/:id': 'Remove URL from watchlist (API key required)',
         'GET /watchlist/alerts': 'View all risk change alerts (API key required)',
-        'POST /policies': 'Create a security policy — custom rules for the gate (API key required)',
+        'GET /policies/presets': 'Built-in security policies — strict, standard, permissive, aiops. Use with /gate?policy=strict (no API key needed)',
+        'POST /policies': 'Create a custom security policy (API key required)',
         'GET /policies': 'List your security policies (API key required)',
         'DELETE /policies/:id': 'Delete a security policy (API key required)',
         'POST /allowlist': 'Add URL/domain/hash to allowlist — gate returns instant ALLOW for matches (API key required)',
@@ -1642,6 +1653,108 @@ app.get('/scan/npm', scanLimiter, async (req, res) => {
     // Check dependencies for known suspicious packages
     const deps = { ...versionMeta.dependencies, ...versionMeta.optionalDependencies };
     const depCount = Object.keys(deps).length;
+
+    // --- npm Typosquatting Detection ---
+    const POPULAR_NPM_PACKAGES = [
+      // Core ecosystem
+      'express', 'lodash', 'axios', 'react', 'webpack', 'typescript', 'eslint', 'prettier',
+      'next', 'vue', 'angular', 'svelte', 'vite', 'rollup', 'babel', 'jest', 'mocha', 'chai',
+      'nodemon', 'dotenv', 'commander', 'chalk', 'inquirer', 'yargs', 'minimist', 'glob',
+      'moment', 'dayjs', 'uuid', 'underscore', 'ramda', 'rxjs', 'socket.io', 'cors',
+      'jsonwebtoken', 'bcrypt', 'helmet', 'passport', 'mongoose', 'sequelize', 'prisma',
+      'redis', 'mysql', 'pg', 'mongodb', 'knex', 'typeorm', 'graphql', 'apollo',
+      // AI / MCP / Agent ecosystem
+      'openai', 'anthropic', 'langchain', 'ai', 'llamaindex', 'ollama',
+      '@modelcontextprotocol/sdk', '@anthropic-ai/sdk', '@google/generative-ai',
+      '@langchain/core', '@langchain/openai', '@langchain/anthropic',
+      'zod', 'cheerio', 'puppeteer', 'playwright',
+      // Build / deploy
+      'esbuild', 'turbo', 'lerna', 'nx', 'pnpm', 'yarn',
+      // Security-sensitive
+      'crypto-js', 'node-fetch', 'got', 'request', 'superagent', 'undici',
+      'sharp', 'jimp', 'multer', 'formidable', 'busboy',
+      'winston', 'pino', 'bunyan', 'morgan',
+      'fs-extra', 'mkdirp', 'rimraf', 'del', 'globby',
+    ];
+
+    // Levenshtein distance (optimized for short strings)
+    function levenshtein(a, b) {
+      if (a === b) return 0;
+      if (a.length === 0) return b.length;
+      if (b.length === 0) return a.length;
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          matrix[i][j] = b[i-1] === a[j-1]
+            ? matrix[i-1][j-1]
+            : Math.min(matrix[i-1][j-1] + 1, matrix[i][j-1] + 1, matrix[i-1][j] + 1);
+        }
+      }
+      return matrix[b.length][a.length];
+    }
+
+    // Strip scope for comparison (e.g., @evil/express → express)
+    const unscopedPkg = pkg.startsWith('@') ? pkg.split('/').pop() : pkg;
+    const normalizedPkg = unscopedPkg.toLowerCase().replace(/[-_.]/g, '');
+
+    for (const popular of POPULAR_NPM_PACKAGES) {
+      const unscopedPopular = popular.startsWith('@') ? popular.split('/').pop() : popular;
+      if (pkg === popular || unscopedPkg === unscopedPopular) continue;
+
+      const normalizedPopular = unscopedPopular.toLowerCase().replace(/[-_.]/g, '');
+      let matched = false;
+      let reason = '';
+
+      // 1. Levenshtein distance ≤ 2 (catches transpositions, off-by-one)
+      const dist = levenshtein(normalizedPkg, normalizedPopular);
+      if (dist > 0 && dist <= 2 && normalizedPkg.length >= 3) {
+        matched = true;
+        reason = `edit distance ${dist} from "${popular}"`;
+      }
+
+      // 2. Hyphen/underscore/dot confusion (e.g., lodash vs lo-dash vs lo_dash)
+      if (!matched && normalizedPkg === normalizedPopular && unscopedPkg !== unscopedPopular) {
+        matched = true;
+        reason = `separator variation of "${popular}"`;
+      }
+
+      // 3. Prefix/suffix tricks (e.g., express-js, expressjs, my-express, express2)
+      if (!matched && normalizedPkg.length <= normalizedPopular.length + 4) {
+        if (normalizedPkg.includes(normalizedPopular) && normalizedPkg !== normalizedPopular) {
+          matched = true;
+          reason = `contains popular name "${popular}"`;
+        }
+      }
+
+      // 4. Scope confusion (e.g., @types/express is fine, @evil/express is suspicious)
+      if (!matched && pkg.startsWith('@') && unscopedPkg === unscopedPopular) {
+        const scope = pkg.split('/')[0];
+        const trustedScopes = ['@types', '@babel', '@eslint', '@jest', '@vue', '@angular', '@react',
+          '@modelcontextprotocol', '@anthropic-ai', '@google', '@langchain', '@aws-sdk', '@azure'];
+        if (!trustedScopes.some(ts => scope === ts || scope.startsWith(ts))) {
+          matched = true;
+          reason = `untrusted scope "${scope}" using popular name "${popular}"`;
+        }
+      }
+
+      if (matched) {
+        // Check npm metadata for additional suspicion signals
+        const createdAt = versionMeta.time?.created || null;
+        const weeklyDownloads = null; // Would need separate API call
+        const severity = (dist === 1 || reason.includes('untrusted scope')) ? 'high' : 'medium';
+
+        packageWarnings.push({
+          type: 'potential_typosquat',
+          severity,
+          similarTo: popular,
+          reason,
+          description: `Package "${pkg}" may be a typosquat of "${popular}" (${reason}). Verify this is the intended package before installing.`,
+        });
+        break; // One typosquat match is enough
+      }
+    }
 
     // Overall risk
     const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
@@ -4078,6 +4191,283 @@ app.get('/scan/github', scanLimiter, async (req, res) => {
   }
 });
 
+// --- Hugging Face Model Scanner ---
+// GET /scan/hf?model=owner/name — scan a HuggingFace model repository for security issues
+// Checks: pickle files (arbitrary code execution), model card poisoning, suspicious configs,
+// code in tokenizer files, malicious custom code, README prompt injection
+app.get('/scan/hf', scanLimiter, async (req, res) => {
+  const model = req.query.model;
+  if (!model) {
+    return res.status(400).json({
+      error: 'model query parameter is required',
+      example: '/scan/hf?model=meta-llama/Llama-3.3-70B-Instruct',
+      hint: 'Pass any Hugging Face model in owner/name format',
+    });
+  }
+
+  // Normalize model ID
+  const modelId = model.replace(/^https?:\/\/huggingface\.co\//, '').replace(/\/$/, '');
+  if (!modelId.includes('/')) {
+    return res.status(400).json({ error: 'Model must be in owner/name format', example: 'meta-llama/Llama-3.3-70B-Instruct' });
+  }
+
+  const hfUrl = `https://huggingface.co/${modelId}`;
+
+  try {
+    // 1. Fetch model metadata from HF API
+    let modelMeta = {};
+    try {
+      modelMeta = await fetchJson(`https://huggingface.co/api/models/${modelId}`);
+    } catch (err) {
+      if (err.message.includes('HTTP 404') || err.message.includes('HTTP 401')) {
+        return res.status(404).json({ error: `Model not found: ${modelId}`, hint: 'Check the model ID and ensure it is public.' });
+      }
+      throw err;
+    }
+
+    const filesToScan = [];
+    const modelWarnings = [];
+
+    // 2. Check for dangerous file types in the model repo
+    const siblings = modelMeta.siblings || [];
+    const fileList = siblings.map(s => s.rfilename || s.filename || '');
+
+    // Pickle files — arbitrary code execution on load
+    const pickleFiles = fileList.filter(f =>
+      /\.(pkl|pickle|pt|pth|bin|ckpt)$/i.test(f) &&
+      !/safetensors/i.test(f) &&
+      !/\.safetensors$/i.test(f)
+    );
+    const safetensorFiles = fileList.filter(f => /\.safetensors$/i.test(f));
+    const hasPickle = pickleFiles.length > 0;
+    const hasSafetensors = safetensorFiles.length > 0;
+
+    if (hasPickle && !hasSafetensors) {
+      modelWarnings.push({
+        type: 'pickle_only',
+        severity: 'critical',
+        description: `Model uses pickle-based format ONLY (${pickleFiles.length} file(s): ${pickleFiles.slice(0, 5).join(', ')}). Pickle files execute arbitrary Python code on load — the #1 model supply chain attack vector. No safetensors alternative available.`,
+        files: pickleFiles.slice(0, 10),
+      });
+    } else if (hasPickle && hasSafetensors) {
+      modelWarnings.push({
+        type: 'pickle_with_safetensors',
+        severity: 'medium',
+        description: `Model has both pickle (${pickleFiles.length}) and safetensors (${safetensorFiles.length}) files. Use safetensors format — it's safe by design. Avoid loading the pickle files.`,
+        pickleFiles: pickleFiles.slice(0, 5),
+        safetensorFiles: safetensorFiles.slice(0, 5),
+      });
+    }
+
+    // GGUF files (safe binary format, just note)
+    const ggufFiles = fileList.filter(f => /\.gguf$/i.test(f));
+
+    // Custom code files — Python files that run when loading the model
+    const pythonFiles = fileList.filter(f => /\.py$/i.test(f) && f !== '__init__.py');
+    const customCodeFiles = pythonFiles.filter(f =>
+      /^(modeling_|configuration_|tokenization_|processing_|feature_extraction_|image_processing_)/i.test(f) ||
+      f === 'model.py' || f === 'pipeline.py' || f === 'handler.py'
+    );
+
+    // trust_remote_code requirement
+    if (modelMeta.config?.auto_map || modelMeta.config?.custom_code || customCodeFiles.length > 0) {
+      modelWarnings.push({
+        type: 'trust_remote_code',
+        severity: 'high',
+        description: `Model requires trust_remote_code=True — executes custom Python code on load. Custom files: ${customCodeFiles.slice(0, 5).join(', ') || pythonFiles.slice(0, 5).join(', ')}. This code runs with full system access.`,
+        customFiles: customCodeFiles.length > 0 ? customCodeFiles.slice(0, 10) : pythonFiles.slice(0, 10),
+      });
+    }
+
+    // 3. Fetch and scan key files from the model repo
+    const filesToFetch = [
+      'README.md',
+      'config.json',
+      'tokenizer_config.json',
+      'special_tokens_map.json',
+      'tokenizer.json',
+      'preprocessor_config.json',
+      'generation_config.json',
+      ...customCodeFiles.slice(0, 5),
+      ...pythonFiles.filter(f => !customCodeFiles.includes(f)).slice(0, 3),
+    ];
+
+    for (const file of filesToFetch) {
+      try {
+        const rawUrl = `https://huggingface.co/${modelId}/raw/main/${file}`;
+        const content = await fetchUrl(rawUrl);
+        if (content && content.length > 10) {
+          // Limit content size for JSON configs (can be huge tokenizer files)
+          const trimmed = content.length > 200000 ? content.substring(0, 200000) : content;
+          filesToScan.push({ name: file, source: rawUrl, content: trimmed });
+        }
+      } catch {}
+    }
+
+    // 4. HuggingFace-specific security analysis on fetched files
+
+    // Check config.json for suspicious settings
+    const configFile = filesToScan.find(f => f.name === 'config.json');
+    if (configFile) {
+      try {
+        const config = JSON.parse(configFile.content);
+        // auto_map means custom code — we already flagged trust_remote_code
+        if (config.auto_map) {
+          const autoMapKeys = Object.keys(config.auto_map);
+          modelWarnings.push({
+            type: 'auto_map_config',
+            severity: 'high',
+            description: `config.json defines auto_map for: ${autoMapKeys.join(', ')}. These map model components to custom Python code that runs on load.`,
+            autoMap: config.auto_map,
+          });
+        }
+        // Check for unusual architectures that might be a trojan
+        if (config.architectures && config.architectures.some(a => /custom|modified|patched/i.test(a))) {
+          modelWarnings.push({
+            type: 'custom_architecture',
+            severity: 'medium',
+            description: `Model uses custom architecture: ${config.architectures.join(', ')}. Verify this is intentional.`,
+          });
+        }
+      } catch {}
+    }
+
+    // Check tokenizer config for code injection via chat templates
+    const tokenizerConfig = filesToScan.find(f => f.name === 'tokenizer_config.json');
+    if (tokenizerConfig) {
+      try {
+        const tc = JSON.parse(tokenizerConfig.content);
+        if (tc.chat_template) {
+          const template = typeof tc.chat_template === 'string' ? tc.chat_template :
+            Array.isArray(tc.chat_template) ? tc.chat_template.map(t => t.template || '').join('\n') : '';
+          // Check for suspicious Jinja2 in chat templates — only flag actual code execution, not standard conditionals
+          const dangerousTemplatePattern = /\{%.*(?:\bimport\s+os\b|\bos\.system\b|\bos\.popen\b|\bsubprocess\b|\beval\s*\(|\bexec\s*\(|\b__import__\b|\bopen\s*\().*%\}/i;
+          if (dangerousTemplatePattern.test(template)) {
+            modelWarnings.push({
+              type: 'malicious_chat_template',
+              severity: 'critical',
+              description: 'Chat template contains code execution patterns (import os, os.system, subprocess, eval, exec). This Jinja2 template runs during inference and could execute arbitrary code.',
+              match: template.match(dangerousTemplatePattern)?.[0]?.substring(0, 200),
+            });
+          }
+          if (/\{\{.*(?:self\.__init__|__class__|__subclasses__|__globals__|__builtins__).*\}\}/i.test(template)) {
+            modelWarnings.push({
+              type: 'ssti_chat_template',
+              severity: 'critical',
+              description: 'Chat template contains SSTI (Server-Side Template Injection) patterns. Exploits Jinja2 sandbox escape to execute arbitrary Python code.',
+              match: template.match(/\{\{.*(?:__class__|__subclasses__|__globals__|__builtins__).*\}\}/i)?.[0]?.substring(0, 200),
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // Scan fetched files with the standard scanner
+    // Skip JSON config files (tokenizer_config.json, config.json, etc.) — they contain
+    // Jinja2 chat templates and config values that trigger false positives with rules
+    // designed for source code. We handle HF-specific JSON checks above.
+    const scannable = filesToScan.filter(f => !/\.json$/i.test(f.name));
+    const fileResults = scannable.map(file => {
+      const result = scanContent(file.content, file.source || `hf:${modelId}/${file.name}`);
+      const id = recordScan(`hf:${modelId}/${file.name}`, result);
+      return {
+        file: file.name,
+        source: file.source,
+        id,
+        riskLevel: result.riskLevel,
+        riskScore: result.riskScore,
+        findings: result.summary.total,
+        critical: result.summary.critical,
+        high: result.summary.high,
+        reportUrl: `/report/${id}`,
+      };
+    });
+
+    // 5. Overall risk calculation
+    const riskOrder = ['clean', 'low', 'moderate', 'high', 'critical'];
+    const worstFileRisk = fileResults.reduce((worst, r) => {
+      return riskOrder.indexOf(r.riskLevel) > riskOrder.indexOf(worst) ? r.riskLevel : worst;
+    }, 'clean');
+
+    let overallRisk = worstFileRisk;
+    // Bump risk for critical/high model-level warnings
+    if (modelWarnings.some(w => w.severity === 'critical')) {
+      overallRisk = 'critical';
+    } else if (modelWarnings.some(w => w.severity === 'high')) {
+      const idx = riskOrder.indexOf(overallRisk);
+      if (idx < 3) overallRisk = 'high';
+    }
+
+    const totalFindings = fileResults.reduce((s, r) => s + r.findings, 0);
+    const totalCritical = fileResults.reduce((s, r) => s + r.critical, 0);
+    const totalHigh = fileResults.reduce((s, r) => s + r.high, 0);
+    const totalScore = fileResults.reduce((s, r) => s + r.riskScore, 0);
+
+    // Add warning scores to total
+    const warnScore = modelWarnings.reduce((s, w) => s + ({ critical: 10, high: 7, medium: 4, low: 1 }[w.severity] || 0), 0);
+    const combinedScore = totalScore + warnScore;
+
+    // Model info
+    const modelInfo = {
+      model: modelId,
+      pipeline_tag: modelMeta.pipeline_tag || null,
+      library_name: modelMeta.library_name || null,
+      tags: (modelMeta.tags || []).slice(0, 20),
+      downloads: modelMeta.downloads || 0,
+      likes: modelMeta.likes || 0,
+      lastModified: modelMeta.lastModified || null,
+      gated: modelMeta.gated || false,
+      private: modelMeta.private || false,
+    };
+
+    const hasCritWarnings = modelWarnings.some(w => w.severity === 'critical');
+    const hasHighWarnings = modelWarnings.some(w => w.severity === 'high');
+
+    res.json({
+      ...modelInfo,
+      hfUrl,
+      fileFormats: {
+        safetensors: safetensorFiles.length,
+        pickle: pickleFiles.length,
+        gguf: ggufFiles.length,
+        python: pythonFiles.length,
+        totalFiles: fileList.length,
+      },
+      filesScanned: fileResults.length,
+      overallRisk,
+      totalRiskScore: combinedScore,
+      totalFindings: totalFindings + modelWarnings.length,
+      totalCritical: totalCritical + modelWarnings.filter(w => w.severity === 'critical').length,
+      totalHigh: totalHigh + modelWarnings.filter(w => w.severity === 'high').length,
+      modelWarnings,
+      verdict: (totalFindings === 0 && modelWarnings.length === 0
+        ? `✅ Model ${modelId} appears clean — ${fileResults.length} file(s) scanned, safetensors format, no custom code.`
+        : hasCritWarnings
+          ? `🔴 CRITICAL: ${modelId} has dangerous loading patterns. ${hasPickle && !hasSafetensors ? 'Pickle-only format executes arbitrary code on load.' : ''} ${modelWarnings.some(w => w.type === 'malicious_chat_template' || w.type === 'ssti_chat_template') ? 'Chat template contains code execution.' : ''} ${modelWarnings.some(w => w.type === 'trust_remote_code') ? 'Requires trust_remote_code — runs custom Python on load.' : ''} Do NOT load without manual audit.`
+          : hasHighWarnings
+            ? `🔶 ${modelId} has security concerns — ${modelWarnings.filter(w => w.severity === 'high').length} high severity warning(s). Review model warnings before loading.`
+            : totalFindings > 0
+              ? `⚠️ ${totalFindings} finding(s) in ${modelId}. Minor concerns detected.`
+              : `⚠️ ${modelWarnings.length} model-level warning(s). Review before loading.`),
+      files: fileResults,
+      safeLoadingGuide: {
+        recommendation: hasSafetensors
+          ? 'Load using safetensors format (safe by design, no code execution)'
+          : hasPickle
+            ? 'WARNING: Only pickle format available. Consider using a safetensors-converted version instead.'
+            : 'Check file formats before loading.',
+        safetensorsExample: hasSafetensors ? `from transformers import AutoModel\nmodel = AutoModel.from_pretrained("${modelId}", use_safetensors=True)` : null,
+        avoidTrustRemoteCode: customCodeFiles.length > 0 ? 'If possible, avoid trust_remote_code=True. Use standard architectures from transformers library instead.' : null,
+      },
+    });
+  } catch (err) {
+    if (err.message.includes('HTTP 404')) {
+      return res.status(404).json({ error: `Model not found: ${modelId}`, hint: 'Check the model ID and ensure it is public.' });
+    }
+    res.status(500).json({ error: `Failed to scan model: ${err.message}` });
+  }
+});
+
 // --- Shared Scan Result (JSON) ---
 app.get('/scan/:id', async (req, res) => {
   const result = await getScanResult(req.params.id);
@@ -5054,6 +5444,44 @@ app.get('/watchlist/alerts', async (req, res) => {
 // Teams define named policies with custom rules. Gate evaluates scan results against policies.
 // Policies specify: max risk score, blocked rules, required/blocked domains, max findings, etc.
 
+// --- Built-in Preset Policies (no API key required) ---
+// Use via /gate?url=...&policy=strict (or standard, permissive, aiops)
+const PRESET_POLICIES = {
+  strict: {
+    id: 'preset:strict', name: 'Strict — Zero tolerance',
+    description: 'Blocks any skill with critical or high findings, threat chains, or risk score above 10. For production agents handling sensitive data.',
+    noCritical: true, maxRiskScore: 10, maxFindings: 3, maxThreatChains: 0,
+    blockCategories: ['credential_theft', 'prompt_injection', 'tool_manipulation', 'resource_abuse'],
+    blockRules: ['CRYPTO_THEFT', 'WALLET_DRAINER', 'REVERSE_SHELL', 'INDIRECT_PROMPT_INJECT', 'TOKEN_STEAL', 'DATA_EXFIL', 'EXFIL_COVERT', 'EXFIL_PATTERN'],
+  },
+  standard: {
+    id: 'preset:standard', name: 'Standard — Block critical, warn moderate',
+    description: 'Blocks critical findings and known dangerous patterns. Good default for most agents.',
+    noCritical: true, maxRiskScore: 50, maxFindings: 20,
+    blockRules: ['CRYPTO_THEFT', 'WALLET_DRAINER', 'REVERSE_SHELL', 'INDIRECT_PROMPT_INJECT', 'EXFIL_COVERT', 'TOKEN_STEAL'],
+  },
+  permissive: {
+    id: 'preset:permissive', name: 'Permissive — Only block confirmed malicious',
+    description: 'Only blocks wallet drainers, reverse shells, or credential exfiltration. For development/testing.',
+    maxRiskScore: 80,
+    blockRules: ['CRYPTO_THEFT', 'WALLET_DRAINER', 'REVERSE_SHELL', 'EXFIL_COVERT'],
+  },
+  aiops: {
+    id: 'preset:aiops', name: 'AI/ML Ops — Agent-specific threats',
+    description: 'Focused on prompt injection, tool poisoning, schema manipulation, agent memory modification. Allows standard code patterns.',
+    noCritical: true, maxRiskScore: 40,
+    blockCategories: ['prompt_injection', 'tool_manipulation'],
+    blockRules: ['INDIRECT_PROMPT_INJECT', 'TOOL_CONFUSION', 'TOOL_POISONING', 'TOOL_SHADOW', 'MCP_SCHEMA_POISON', 'AGENT_MEMORY_MOD', 'A2A_AGENT_IMPERSONATION', 'A2A_TASK_HIJACK', 'A2A_CROSS_AGENT_INJECT', 'RESOURCE_ABUSE'],
+  },
+};
+
+// Resolve policy: presets first (no key needed), then user-created (key needed)
+async function resolvePolicy(policyId, apiKey) {
+  if (PRESET_POLICIES[policyId]) return PRESET_POLICIES[policyId];
+  if (apiKey && await isValidKey(apiKey)) return db.getPolicy(apiKey, policyId);
+  return null;
+}
+
 function evaluatePolicy(policy, scanResult, url) {
   const violations = [];
   const domain = getDomain(url);
@@ -5158,6 +5586,30 @@ function evaluatePolicy(policy, scanResult, url) {
   const passed = violations.length === 0;
   return { passed, violations, policyId: policy.id, policyName: policy.name };
 }
+
+// --- List built-in preset policies ---
+app.get('/policies/presets', (req, res) => {
+  const presets = Object.entries(PRESET_POLICIES).map(([key, p]) => ({
+    key,
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    usage: `/gate?url=<skill_url>&policy=${key}`,
+    config: {
+      noCritical: p.noCritical || false,
+      maxRiskScore: p.maxRiskScore ?? null,
+      maxFindings: p.maxFindings ?? null,
+      maxThreatChains: p.maxThreatChains ?? null,
+      blockCategories: p.blockCategories || [],
+      blockRules: p.blockRules || [],
+    },
+  }));
+  res.json({
+    count: presets.length,
+    description: 'Built-in security policies — use with /gate?policy=<key>. No API key required.',
+    presets,
+  });
+});
 
 // CRUD endpoints for policies
 app.post('/policies', async (req, res) => {
@@ -5819,6 +6271,7 @@ app.get('/openapi.json', (req, res) => {
       '/scan/batch': { post: { summary: 'Batch scan up to 20 URLs (x402: $0.10 USDC on Base/Solana)', responses: { '200': { description: 'Batch results' }, '402': { description: 'Payment required' } } } },
       '/scan/compare': { post: { summary: 'Compare two skill versions (x402: $0.05 USDC on Base/Solana)', responses: { '200': { description: 'Comparison result' }, '402': { description: 'Payment required' } } } },
       '/scan/mcp': { post: { summary: 'Scan MCP server tool definitions', description: 'Scans MCP tool schemas for schema poisoning, prompt injection in descriptions, suspicious parameters, and cross-tool capability threat chains.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['tools'], properties: { serverName: { type: 'string' }, tools: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, inputSchema: { type: 'object' } } } } } } } } }, responses: { '200': { description: 'MCP tool scan results with per-tool findings and cross-tool analysis' } } } },
+      '/scan/hf': { get: { summary: 'Scan a Hugging Face model', description: 'Fetches model metadata, checks for pickle files (arbitrary code execution), custom code (trust_remote_code), malicious chat templates, and scans README/config/Python files for security issues.', parameters: [{ name: 'model', in: 'query', required: true, schema: { type: 'string' }, description: 'HuggingFace model ID', example: 'meta-llama/Llama-3.3-70B-Instruct' }], responses: { '200': { description: 'Model scan results with file formats, warnings, and safe loading guide' }, '404': { description: 'Model not found' } } } },
       '/scan/go': { get: { summary: 'Scan a Go module', description: 'Fetches source files from GitHub for a Go module, scans for security issues, and performs Go-specific checks (CGo, unsafe, exec, syscall, plugin loading, replace directives).', parameters: [{ name: 'module', in: 'query', required: true, schema: { type: 'string' }, description: 'Go module path', example: 'github.com/anthropics/anthropic-sdk-go' }], responses: { '200': { description: 'Go module scan results' }, '404': { description: 'Module not found' } } } },
       '/scan/repo': { get: { summary: 'Scan a GitHub repository for skill files', description: 'Auto-discovers SKILL.md, skill.json, plugin.json, mcp.json, and files in skills/tools/plugins directories. Scans them all and returns aggregated results.', parameters: [{ name: 'repo', in: 'query', required: true, schema: { type: 'string' }, description: 'GitHub repo in owner/name format', example: 'modelcontextprotocol/servers' }, { name: 'branch', in: 'query', required: false, schema: { type: 'string', default: 'main' }, description: 'Branch to scan' }], responses: { '200': { description: 'Repository scan results with per-file breakdown' }, '404': { description: 'Repository not found' } } } },
       '/scan/history/url': { get: { summary: 'URL scan history with drift detection and trend analysis', description: 'Returns the complete scan history for a URL — every past scan with risk level, score, and findings count. Includes trend analysis (worsening/improving/stable), peak risk, and score averages. Use to monitor how a skill evolves over time and detect supply chain attacks where a safe skill turns malicious after gaining trust.', parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'URL to check history for' }, { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 50 }, description: 'Max entries to return' }], responses: { '200': { description: 'Scan history with trend analysis' } } } },
